@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Youtube } from "lucide-react";
+import { Play } from "lucide-react";
 
 interface Props {
   value: string;
@@ -36,7 +36,7 @@ export default function YouTubeInput({ value, onChange }: Props) {
           placeholder="https://www.youtube.com/watch?v=..."
           className="input-dark w-full pl-12"
         />
-        <Youtube className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-red-500" />
+        <Play className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-red-500" />
       </div>
       {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
       <div className="flex items-center gap-2 mt-3 text-sm text-zinc-500">
