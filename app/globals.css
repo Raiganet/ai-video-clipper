@@ -3,38 +3,32 @@
 @tailwind utilities;
 
 :root {
-  --primary-green: #10b981;
-  --dark-bg: #0a0a0a;
-  --card-bg: #111111;
+  --background: #000000;
+  --foreground: #ffffff;
+  --primary: #10b981;
+  --primary-hover: #059669;
 }
 
 body {
-  background: var(--dark-bg);
-  color: white;
+  background: var(--background);
+  color: var(--foreground);
 }
 
 .gradient-text {
   background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .btn-primary {
   @apply bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center gap-2;
 }
 
-.card {
-  @apply bg-gray-900 border border-gray-800 rounded-xl p-6;
+.card-dark {
+  @apply bg-zinc-900 border border-zinc-800 rounded-xl p-6;
 }
 
-.input-field {
-  @apply w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent;
-}
-
-.toggle-option {
-  @apply px-4 py-2 rounded-lg border border-gray-700 cursor-pointer transition-all duration-200 hover:border-emerald-500;
-}
-
-.toggle-option.active {
-  @apply bg-emerald-600 border-emerald-500 text-white;
+.input-dark {
+  @apply bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500;
 }

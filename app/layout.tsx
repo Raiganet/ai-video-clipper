@@ -6,7 +6,7 @@ const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "AI Video Clipper - Ubah Video Panjang Jadi Klip Viral",
-  description: "AI-powered video clipper untuk membuat konten viral dari video panjang",
+  description: "AI-powered video clipper untuk membuat viral clips dari video panjang",
 };
 
 export default function RootLayout({
@@ -16,7 +16,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="id">
-      <body className={`${inter.className} bg-gray-950 text-white`}>
+      <body className={`${inter.className} bg-black text-white`}>
         {children}
       </body>
     </html>

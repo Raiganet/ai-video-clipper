@@ -9,13 +9,11 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        gray: {
-          950: '#0a0a0a',
-        },
+        background: "var(--background)",
+        foreground: "var(--foreground)",
       },
     },
   },
   plugins: [],
 };
-
 export default config;
