@@ -6,6 +6,7 @@ interface CaptionStyle {
   label: string;
   subtitle?: string;
   featured?: boolean;
+  highlight?: boolean;
 }
 
 const styles: CaptionStyle[] = [
