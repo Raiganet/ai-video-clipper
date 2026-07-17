@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary-green: #10b981;
+  --dark-bg: #0a0a0a;
+  --card-bg: #111111;
+}
+
+body {
+  background: var(--dark-bg);
+  color: white;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #10b981 0%, #34d399 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.btn-primary {
+  @apply bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center gap-2;
+}
+
+.card {
+  @apply bg-gray-900 border border-gray-800 rounded-xl p-6;
+}
+
+.input-field {
+  @apply w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent;
+}
+
+.toggle-option {
+  @apply px-4 py-2 rounded-lg border border-gray-700 cursor-pointer transition-all duration-200 hover:border-emerald-500;
+}
+
+.toggle-option.active {
+  @apply bg-emerald-600 border-emerald-500 text-white;
+}
