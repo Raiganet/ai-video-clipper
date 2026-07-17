@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { Upload, Youtube, Sparkles, Settings } from "lucide-react";
-import YouTubeInput from "@/components/YouTubeInput";
-import VideoUploader from "@/components/VideoUploader";
-import CaptionStyleSelector from "@/components/CaptionStyleSelector";
-import SettingsPanel from "@/components/SettingsPanel";
+import YouTubeInput from "../components/YouTubeInput";
+import VideoUploader from "../components/VideoUploader";
+import CaptionStyleSelector from "../components/CaptionStyleSelector";
+import SettingsPanel from "../components/SettingsPanel";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"youtube" | "upload">("youtube");

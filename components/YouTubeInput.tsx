@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Youtube, Link } from "lucide-react";
+import { Youtube } from "lucide-react";
 
 interface Props {
   value: string;
@@ -40,7 +40,7 @@ export default function YouTubeInput({ value, onChange }: Props) {
       </div>
       {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
       <div className="flex items-center gap-2 mt-3 text-sm text-zinc-500">
-        <input type="checkbox" className="rounded bg-zinc-800 border-zinc-700" />
+        <input type="checkbox" className="rounded bg-zinc-800 border-zinc-700" defaultChecked />
         <span>Link ini video contoh — video kamu sendiri dibuka setelah berlangganan.</span>
       </div>
     </div>
