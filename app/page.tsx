@@ -1,13 +1,28 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { Upload, Play, Sparkles, Download, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { Upload, Play, Sparkles, Download, Loader2, Scissors } from "lucide-react";
 import YouTubeInput from "@/components/YouTubeInput";
 import VideoUploader from "@/components/VideoUploader";
 import CaptionStyleSelector from "@/components/CaptionStyleSelector";
 import SettingsPanel from "@/components/SettingsPanel";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
+// SATU-SATUNYA import terkait ffmpeg yang boleh ada:
+import { trimVideo, getVideoDuration } from "@/lib/ffmpeg";
+
+type Clip = {
+  id: number;
+  title: string;
+  start: number;
+  duration: number;
+  blobUrl: string | null;
+  processing: boolean;
+};
+
+function fmt(t: number) {
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"youtube" | "upload">("youtube");
@@ -20,110 +35,128 @@ export default function Home() {
     crop: "auto",
     aiMode: "transcript",
   });
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingProgress, setProcessingProgress] = useState(0);
-  const [processedVideoUrl, setProcessedVideoUrl] = useState<string | null>(null);
-  const [ffmpeg, setFfmpeg] = useState<FFmpeg | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Load FFmpeg saat component mount
-  useEffect(() => {
-    const loadFFmpeg = async () => {
-      const ffmpegInstance = new FFmpeg();
-      await ffmpegInstance.load({
-        coreURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js",
-        wasmURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm"
-      });
-      setFfmpeg(ffmpegInstance);
-    };
-    loadFFmpeg();
-  }, []);
+  const [status, setStatus] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [clips, setClips] = useState<Clip[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
 
-  const handleProcess = async () => {
+  const selectedClip = clips.find((c) => c.id === selectedId) || null;
+
+  const processClip = async (clip: Clip, file: File) => {
+    setClips((prev) =>
+      prev.map((c) => (c.id === clip.id ? { ...c, processing: true } : c))
+    );
+    try {
+      const blob = await trimVideo(file, clip.start, clip.duration, (p) =>
+        setProgress(p)
+      );
+      const url = URL.createObjectURL(blob);
+      setClips((prev) =>
+        prev.map((c) =>
+          c.id === clip.id ? { ...c, blobUrl: url, processing: false } : c
+        )
+      );
+    } catch (e) {
+      setClips((prev) =>
+        prev.map((c) => (c.id === clip.id ? { ...c, processing: false } : c))
+      );
+      throw e;
+    }
+  };
+
+  const handleFindPreviews = async () => {
     if (!uploadedVideo) {
       alert("Silakan upload video terlebih dahulu");
       return;
     }
-
-    if (!ffmpeg) {
-      alert("FFmpeg belum siap. Mohon tunggu sebentar...");
-      return;
-    }
-
-    setIsProcessing(true);
-    setProcessingProgress(0);
-    setProcessedVideoUrl(null);
+    setBusy(true);
+    setClips([]);
+    setSelectedId(null);
+    setProgress(0);
 
     try {
-      // Tulis file ke memory FFmpeg
-      await ffmpeg.writeFile("input.mp4", await fetchFile(uploadedVideo));
+      setStatus("Memuat mesin video (sekali saja)...");
+      const duration = await getVideoDuration(uploadedVideo);
+      if (!duration || duration <= 0) throw new Error("Durasi video tidak valid");
 
-      // Proses trim video (detik 0-30 sebagai contoh)
-      // Di sini nanti bisa diganti dengan AI logic untuk detect momen viral
-      await ffmpeg.exec([
-        "-i", "input.mp4",
-        "-ss", "0",
-        "-t", "30",
-        "-c", "copy",
-        "output.mp4"
-      ]);
+      const clipLen = 20;
+      const count = Math.min(
+        settings.previewCount,
+        Math.max(1, Math.floor(duration / clipLen))
+      );
+      const generated: Clip[] = Array.from({ length: count }, (_, i) => ({
+        id: i + 1,
+        title: `Klip ${i + 1}`,
+        start: i * clipLen,
+        duration: Math.min(clipLen, duration - i * clipLen),
+        blobUrl: null,
+        processing: false,
+      }));
+      setClips(generated);
 
-      // Baca hasil
-      const data = await ffmpeg.readFile("output.mp4");
-      
-      // Buat blob URL untuk preview
-      const blob = new Blob([data], { type: "video/mp4" });
-      const url = URL.createObjectURL(blob);
-      setProcessedVideoUrl(url);
-
-      // Cleanup
-      await ffmpeg.deleteFile("input.mp4");
-      await ffmpeg.deleteFile("output.mp4");
-
-      setProcessingProgress(100);
-      
+      setStatus(`Memproses ${generated[0].title}...`);
+      await processClip(generated[0], uploadedVideo);
+      setSelectedId(generated[0].id);
+      setStatus("Selesai! Klik klip lain untuk memprosesnya.");
     } catch (error) {
-      console.error("Error processing video:", error);
-      alert(`Terjadi kesalahan: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(error);
+      const msg = error instanceof Error ? error.message : String(error);
+      setStatus("");
+      alert(`Gagal memproses: ${msg}`);
     } finally {
-      setIsProcessing(false);
+      setBusy(false);
+      setProgress(0);
     }
   };
 
-  const handleDownload = () => {
-    if (!processedVideoUrl) return;
-    
+  const handleSelectClip = async (clip: Clip) => {
+    setSelectedId(clip.id);
+    if (!clip.blobUrl && uploadedVideo && !clip.processing) {
+      setBusy(true);
+      setStatus(`Memproses ${clip.title}...`);
+      try {
+        await processClip(clip, uploadedVideo);
+        setStatus("Selesai!");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        alert(`Gagal: ${msg}`);
+      } finally {
+        setBusy(false);
+        setProgress(0);
+      }
+    }
+  };
+
+  const handleDownload = (clip: Clip) => {
+    if (!clip.blobUrl) return;
     const a = document.createElement("a");
-    a.href = processedVideoUrl;
-    a.download = `ai-clip-${Date.now()}.mp4`;
+    a.href = clip.blobUrl;
+    a.download = `ai-clip-${clip.id}-${Date.now()}.mp4`;
     a.click();
   };
 
   return (
     <div className="min-h-screen bg-black text-white">
-      {/* Header */}
       <header className="border-b border-zinc-800">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-bold text-xl">AI Clipper</span>
-            <span className="bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded-full">
-              BETA
-            </span>
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-2">
+          <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
+            <Sparkles className="w-5 h-5 text-white" />
           </div>
+          <span className="font-bold text-xl">AI Clipper</span>
+          <span className="bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded-full">
+            BETA
+          </span>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-5xl mx-auto px-4 py-12">
-        {/* Hero */}
         <div className="text-center mb-12">
           <div className="inline-flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-4 py-2 mb-4">
-            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
             <span className="text-emerald-400 text-sm">
-              Mode demo • hasil asli dari video contoh
+              Proses 100% di browser • gratis
             </span>
           </div>
           <h1 className="text-4xl md:text-5xl font-bold mb-4">
@@ -131,13 +164,11 @@ export default function Home() {
             <span className="text-emerald-500">klip viral</span>
           </h1>
           <p className="text-zinc-400 text-lg">
-            Tempel link, klik sekali. AI yang cariin momen terbaiknya.
+            Upload video, klik sekali. Video dipotong langsung di perangkatmu.
           </p>
         </div>
 
-        {/* Main Card */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-8">
-          {/* Tabs */}
           <div className="flex gap-2 mb-6">
             <button
               onClick={() => setActiveTab("youtube")}
@@ -147,8 +178,7 @@ export default function Home() {
                   : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
               }`}
             >
-              <Play className="w-5 h-5" />
-              YouTube
+              <Play className="w-5 h-5" /> YouTube
             </button>
             <button
               onClick={() => setActiveTab("upload")}
@@ -158,81 +188,108 @@ export default function Home() {
                   : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
               }`}
             >
-              <Upload className="w-5 h-5" />
-              Upload video
+              <Upload className="w-5 h-5" /> Upload video
             </button>
           </div>
 
-          {/* Content */}
           {activeTab === "youtube" ? (
             <YouTubeInput value={videoUrl} onChange={setVideoUrl} />
           ) : (
             <VideoUploader onUpload={setUploadedVideo} video={uploadedVideo} />
           )}
 
-          {/* Caption Style */}
           <div className="mt-8">
             <label className="text-sm text-zinc-400 mb-3 block">
-              GAYA CAPTION <span className="text-zinc-600">(Clean disarankan)</span>
+              GAYA CAPTION{" "}
+              <span className="text-zinc-600">(Clean disarankan)</span>
             </label>
             <CaptionStyleSelector value={captionStyle} onChange={setCaptionStyle} />
           </div>
 
-          {/* Process Button */}
           <button
-            onClick={handleProcess}
-            disabled={isProcessing || !uploadedVideo || !ffmpeg}
+            onClick={handleFindPreviews}
+            disabled={busy || !uploadedVideo}
             className="w-full mt-8 bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-semibold py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center gap-2"
           >
-            {isProcessing ? (
+            {busy ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin" />
-                Memproses... {processingProgress}%
+                {status || "Memproses..."}
               </>
             ) : (
               <>
-                <Sparkles className="w-5 h-5" />
-                Cari Preview
+                <Sparkles className="w-5 h-5" /> Cari Preview
               </>
             )}
           </button>
 
-          {/* Progress Bar */}
-          {isProcessing && (
+          {busy && (
             <div className="mt-4 bg-zinc-800 rounded-full h-2 overflow-hidden">
-              <div 
+              <div
                 className="bg-emerald-500 h-full transition-all duration-300"
-                style={{ width: `${processingProgress}%` }}
+                style={{ width: `${progress}%` }}
               />
-            </div>
-          )}
-
-          {/* Video Preview */}
-          {processedVideoUrl && (
-            <div className="mt-8 p-6 bg-zinc-800/50 rounded-lg border border-zinc-700">
-              <h3 className="text-xl font-bold mb-4">Preview Klip</h3>
-              <video
-                ref={videoRef}
-                src={processedVideoUrl}
-                controls
-                className="w-full rounded-lg bg-black"
-              />
-              <button
-                onClick={handleDownload}
-                className="btn-primary w-full mt-4"
-              >
-                <Download className="w-5 h-5" />
-                Download Video
-              </button>
             </div>
           )}
 
           <p className="text-center text-zinc-600 text-sm mt-4">
-            Tonton demo gratis • download & video sendiri untuk subscriber
+            Pertama kali klik men-download mesin video (~30MB), lalu di-cache browser.
           </p>
         </div>
 
-        {/* Settings */}
+        {clips.length > 0 && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-8">
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <Scissors className="w-5 h-5 text-emerald-500" />
+              Preview Klip ({clips.length})
+            </h3>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+              {clips.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => handleSelectClip(c)}
+                  className={`text-left p-4 rounded-lg border transition-all ${
+                    selectedId === c.id
+                      ? "border-emerald-500 bg-emerald-500/10"
+                      : "border-zinc-700 bg-zinc-800 hover:border-zinc-600"
+                  }`}
+                >
+                  <div className="font-semibold">{c.title}</div>
+                  <div className="text-xs text-zinc-400 mt-1">
+                    {fmt(c.start)} – {fmt(c.start + c.duration)}
+                  </div>
+                  <div className="text-xs mt-2">
+                    {c.processing ? (
+                      <span className="text-emerald-400">Memproses...</span>
+                    ) : c.blobUrl ? (
+                      <span className="text-emerald-400">✓ Siap</span>
+                    ) : (
+                      <span className="text-zinc-500">Klik untuk proses</span>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {selectedClip?.blobUrl && (
+              <div className="p-4 bg-zinc-800/50 rounded-lg border border-zinc-700">
+                <video
+                  src={selectedClip.blobUrl}
+                  controls
+                  className="w-full rounded-lg bg-black"
+                />
+                <button
+                  onClick={() => handleDownload(selectedClip)}
+                  className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2"
+                >
+                  <Download className="w-5 h-5" /> Download {selectedClip.title}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <SettingsPanel settings={settings} onChange={setSettings} />
       </main>
     </div>
