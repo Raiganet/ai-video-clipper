@@ -24,8 +24,9 @@ function loadLibs() {
   if (!libsPromise) {
     libsPromise = (async () => {
       const [ffmpegMod, utilMod] = await Promise.all([
-        nativeImport("https://esm.sh/@ffmpeg/ffmpeg@0.12.10"),
-        nativeImport("https://esm.sh/@ffmpeg/util@0.13.0"),
+        // ✅ versi valid (latest di npm)
+        nativeImport("https://esm.sh/@ffmpeg/ffmpeg@0.12.15"),
+        nativeImport("https://esm.sh/@ffmpeg/util@0.12.2"),
       ]);
       return {
         FFmpeg: ffmpegMod.FFmpeg,
@@ -51,7 +52,8 @@ export async function getFFmpeg(): Promise<AnyFFmpeg> {
       progressCb?.(pct);
     });
 
-    const base = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
+    // ✅ core versi 0.12.10 (latest, kompatibel dengan ffmpeg 0.12.x)
+    const base = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
     await instance.load({
       coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
       wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
@@ -98,7 +100,6 @@ export async function trimVideo(
     await instance.deleteFile(inputName);
     await instance.deleteFile(outputName);
 
-    // `data` bertipe any (instance:any) -> aman dari error BlobPart TS 5.7+
     return new Blob([data], { type: "video/mp4" });
   } finally {
     progressCb = null;
