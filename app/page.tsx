@@ -86,6 +86,20 @@ export default function Home() {
         settings.previewCount,
         Math.max(1, Math.floor(duration / clipLen))
       );
+      try {
+    setStatus("Memuat mesin video...");
+    const duration = await getVideoDuration(uploadedVideo);
+    
+    // Tambahkan transkripsi
+    setStatus("Transkripsi audio...");
+    const transcript = await transcribeAudio(uploadedVideo);
+    setStatus("Mendeteksi momen viral...");
+    
+    // ... kode selanjutnya
+  } catch (error) {
+    // ... kode error
+  }
+}
       const generated: Clip[] = Array.from({ length: count }, (_, i) => ({
         id: i + 1,
         title: `Klip ${i + 1}`,
