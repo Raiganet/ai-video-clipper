@@ -34,7 +34,7 @@ export default function YouTubeInput({ value, onChange }: Props) {
           value={value}
           onChange={handleChange}
           placeholder="https://www.youtube.com/watch?v=..."
-          className="input-dark w-full pl-12"
+          className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 pl-12 text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500"
         />
         <Play className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-red-500" />
       </div>

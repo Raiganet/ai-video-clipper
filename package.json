@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "@vercel/blob": "^2.6.1",
     "framer-motion": "^12.42.2",
     "lucide-react": "^1.25.0",
