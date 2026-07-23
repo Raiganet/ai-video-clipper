@@ -1,4 +1,3 @@
-// app/api/transcribe/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
@@ -8,7 +7,6 @@ export async function POST(request: NextRequest) {
 
     if (!file) {
       return NextResponse.json({ error: "Tidak ada file yang diunggah" }, { status: 400 });
- are no longer supported
     }
 
     // Batasi ukuran file untuk Groq (max ~25MB untuk free tier)
