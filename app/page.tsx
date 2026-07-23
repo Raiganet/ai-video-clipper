@@ -242,8 +242,7 @@ export default function Home() {
 
           <div className="mt-8">
             <label className="text-sm text-zinc-400 mb-3 block">
-              GAYA CAPTION{" "}
-              <span className="text-zinc-600">(Clean disarankan)</span>
+              GAYA CAPTION <span className="text-zinc-600">(Clean disarankan)</span>
             </label>
             <CaptionStyleSelector value={captionStyle} onChange={setCaptionStyle} />
           </div>
@@ -311,7 +310,7 @@ export default function Home() {
                     ) : (
                       <span className="text-zinc-500">Klik untuk proses</span>
                     )}
-                 3>
+                  </div>
                   {c.isAiDetected && (
                     <div className="mt-2 inline-flex items-center gap-1 text-[10px] bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded-full">
                       <Sparkles className="w-3 h-3" /> AI Detected
