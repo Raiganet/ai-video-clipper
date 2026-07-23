@@ -1,6 +1,6 @@
 // lib/ffmpeg.ts
-// FFmpeg.wasm dimuat 100% di browser via CDN (esm.sh) agar Turbopack/webpack
-// TIDAK mem-bundle dynamic import internal library (penyebab "too dynamic").
+// FFmpeg.wasm dimuat 100% di browser via CDN agar Turbopack/webpack TIDAK
+// mem-bundle dynamic import internal library (penyebab "too dynamic").
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyFFmpeg = any;
@@ -10,6 +10,10 @@ const nativeImport = new Function("url", "return import(url)") as (
   url: string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ) => Promise<any>;
+
+const FFMPEG_VERSION = "0.12.15";
+const UTIL_VERSION = "0.12.2";
+const CORE_VERSION = "0.12.10";
 
 let ffmpeg: AnyFFmpeg | null = null;
 let loadPromise: Promise<AnyFFmpeg> | null = null;
@@ -24,9 +28,8 @@ function loadLibs() {
   if (!libsPromise) {
     libsPromise = (async () => {
       const [ffmpegMod, utilMod] = await Promise.all([
-        // ✅ versi valid (latest di npm)
-        nativeImport("https://esm.sh/@ffmpeg/ffmpeg@0.12.15"),
-        nativeImport("https://esm.sh/@ffmpeg/util@0.12.2"),
+        nativeImport(`https://esm.sh/@ffmpeg/ffmpeg@${FFMPEG_VERSION}`),
+        nativeImport(`https://esm.sh/@ffmpeg/util@${UTIL_VERSION}`),
       ]);
       return {
         FFmpeg: ffmpegMod.FFmpeg,
@@ -36,6 +39,19 @@ function loadLibs() {
     })();
   }
   return libsPromise;
+}
+
+/**
+ * Worker komunikasi WAJIB same-origin. Kita buat blob same-origin yang
+ * meng-import worker ESM dari CDN sebagai ES module. Import relatif di dalam
+ * worker.js (./const.js, ./errors.js) akan resolve ke CDN (bukan ke blob),
+ * sehingga rantai modul tetap utuh & CORS terpenuhi.
+ */
+function makeSameOriginWorkerURL(): string {
+  const workerEntry = `https://unpkg.com/@ffmpeg/ffmpeg@${FFMPEG_VERSION}/dist/esm/worker.js`;
+  const source = `import ${JSON.stringify(workerEntry)};`;
+  const blob = new Blob([source], { type: "text/javascript" });
+  return URL.createObjectURL(blob);
 }
 
 /** Muat mesin FFmpeg sekali saja, ON-DEMAND (bukan saat halaman dibuka). */
@@ -52,12 +68,15 @@ export async function getFFmpeg(): Promise<AnyFFmpeg> {
       progressCb?.(pct);
     });
 
-    // ✅ core versi 0.12.10 (latest, kompatibel dengan ffmpeg 0.12.x)
-    const base = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
-    await instance.load({
-      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
-      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
-    });
+    // Core (ESM) via blob same-origin -> dipakai worker lewat dynamic import().
+    const coreBase = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
+    const coreURL = await toBlobURL(`${coreBase}/ffmpeg-core.js`, "text/javascript");
+    const wasmURL = await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, "application/wasm");
+
+    // ✅ KUNCI PERBAIKAN: worker same-origin (menghilangkan SecurityError).
+    const workerURL = makeSameOriginWorkerURL();
+
+    await instance.load({ coreURL, wasmURL, workerURL });
 
     ffmpeg = instance;
     return instance;
