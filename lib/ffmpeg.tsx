@@ -1,12 +1,11 @@
 // lib/ffmpeg.ts
 // FFmpeg.wasm dimuat 100% di browser via CDN (esm.sh) agar Turbopack/webpack
-// TIDAK mem-bundle dynamic import internal library — ini penyebab error
-// "Cannot find module as expression is too dynamic".
+// TIDAK mem-bundle dynamic import internal library (penyebab "too dynamic").
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyFFmpeg = any;
 
-// Dynamic import yang TIDAK terlihat bundler (tak ada `import(` di source).
+// Dynamic import yang TIDAK terlihat bundler (tak ada tulisan `import(` di source).
 const nativeImport = new Function("url", "return import(url)") as (
   url: string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -38,7 +37,7 @@ function loadLibs() {
   return libsPromise;
 }
 
-/** Muat mesin FFmpeg sekali saja (on-demand, BUKAN saat halaman dibuka). */
+/** Muat mesin FFmpeg sekali saja, ON-DEMAND (bukan saat halaman dibuka). */
 export async function getFFmpeg(): Promise<AnyFFmpeg> {
   if (ffmpeg) return ffmpeg;
   if (loadPromise) return loadPromise;
@@ -52,7 +51,6 @@ export async function getFFmpeg(): Promise<AnyFFmpeg> {
       progressCb?.(pct);
     });
 
-    // ESM core via blob same-origin → browser native import (bukan bundler)
     const base = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm";
     await instance.load({
       coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
@@ -100,13 +98,14 @@ export async function trimVideo(
     await instance.deleteFile(inputName);
     await instance.deleteFile(outputName);
 
+    // `data` bertipe any (instance:any) -> aman dari error BlobPart TS 5.7+
     return new Blob([data], { type: "video/mp4" });
   } finally {
     progressCb = null;
   }
 }
 
-/** Ambil durasi video (detik) untuk membuat rentang klip yang masuk akal. */
+/** Ambil durasi video (detik). */
 export function getVideoDuration(file: File): Promise<number> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
