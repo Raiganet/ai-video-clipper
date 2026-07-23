@@ -74,22 +74,18 @@ export async function getFFmpeg(): Promise<AnyFFmpeg> {
     const wasmURL = await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, "application/wasm");
 
     // ✅ KUNCI PERBAIKAN: worker same-origin (menghilangkan SecurityError).
-    const workerURL = makeSameOriginWorkerURL();
+  const workerURL = 'https://esm.sh/@ffmpeg/ffmpeg@0.12.15/es2022/worker.js';
+const response = await fetch(workerURL);
+const script = await response.text();
+const blob = new Blob([script], { type: 'application/javascript' });
+const localWorkerURL = URL.createObjectURL(blob);
 
-    await instance.load({ coreURL, wasmURL, workerURL });
-
-    ffmpeg = instance;
-    return instance;
-  })();
-
-  try {
-    return await loadPromise;
-  } catch (e) {
-    loadPromise = null;
-    libsPromise = null;
-    throw e;
-  }
-}
+// Use localWorkerURL when initializing your FFmpeg instance
+// Note: FFmpeg.js usually allows passing a workerURL in the load() options
+await ffmpeg.load({
+  workerURL: localWorkerURL,
+  // Ensure you also handle coreURL if it's on a different domain
+});
 
 /** Potong video dari startSec selama durationSec (tanpa re-encode = cepat). */
 export async function trimVideo(
