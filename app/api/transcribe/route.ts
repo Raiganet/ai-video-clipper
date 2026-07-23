@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Batasi ukuran file untuk Groq (max ~25MB untuk free tier)
-    if (file.size > 25 * 1024 * 1024) {
+    if (file.size > 50 * 1024 * 1024) {
       return NextResponse.json({ 
         error: "File terlalu besar untuk transkripsi AI (Maks 25MB). Gunakan video lebih pendek atau mode basic." 
       }, { status: 413 });
