@@ -1,90 +1,66 @@
 // lib/viralDetector.ts
+export interface ViralMoment {
+  start: number;
+  end: number;
+  score: number;
+  title: string;
+}
 
-/** Deteksi momen viral berdasarkan transkripsi */
 export function detectViralMoments(
   transcript: string,
   videoDuration: number,
-  options: {
-    maxClips?: number;
-    minClipDuration?: number;
-    maxClipDuration?: number;
-  } = {}
-): { start: number; end: number; score: number }[] {
-  const { maxClips = 5, minClipDuration = 20, maxClipDuration = 60 } = options;
-  
+  maxClips: number = 5
+): ViralMoment[] {
   const words = transcript.split(/\s+/).filter(Boolean);
-  const wordsPerSecond = words.length / videoDuration;
+  const wordsPerSecond = words.length / Math.max(1, videoDuration);
   
-  // Deteksi momen berdasarkan pola kalimat
-  const viralMoments: { start: number; end: number; score: number }[] = [];
+  // Kata kunci yang sering menandakan momen viral/penarik perhatian
+  const emotionalKeywords = [
+    "wow", "keren", "hebat", "luar biasa", "mengagumkan", "kagum", 
+    "terkesan", "penting", "rahasia", "tips", "hack", "jangan", "pernah", "terbaik"
+  ];
   
-  // 1. Deteksi kalimat yang mengandung emosi kuat
-  const emotionalKeywords = ["wow", "keren", "hebat", "luar biasa", "mengagumkan", "kagum", "terkesan"];
-  const emotionalMoments = detectKeywordMoments(transcript, emotionalKeywords);
-  
-  // 2. Deteksi jeda diam yang menandakan pergantian topik
-  const silenceMoments = detectSilenceMoments(videoDuration);
-  
-  // 3. Kombinasikan dan beri skor
-  const allMoments = [...emotionalMoments, ...silenceMoments];
-  allMoments.sort((a, b) => b.score - a.score);
-  
-  // Ambil N momen terbaik
-  return allMoments.slice(0, maxClips)
-    .map(m => ({
-      start: Math.max(0, m.start),
-      end: Math.min(videoDuration, m.end),
-      score: m.score
-    }))
-    .filter(m => m.end - m.start >= minClipDuration && m.end - m.start <= maxClipDuration);
-}
+  const moments: ViralMoment[] = [];
 
-/** Deteksi momen berdasarkan kata kunci */
-function detectKeywordMoments(
-  transcript: string,
-  keywords: string[],
-  windowSize = 5
-): { start: number; end: number; score: number }[] {
-  const moments: { start: number; end: number; score: number }[] = [];
-  const words = transcript.split(/\s+/).filter(Boolean);
-  
   for (let i = 0; i < words.length; i++) {
     const word = words[i].toLowerCase();
-    if (keywords.some(kw => word.includes(kw))) {
-      // Hitung skor berdasarkan kata kunci
-      const score = 1 + keywords.filter(kw => word.includes(kw)).length * 0.5;
+    const isKeyword = emotionalKeywords.some(kw => word.includes(kw));
+    
+    if (isKeyword) {
+      const position = i / wordsPerSecond;
+      const start = Math.max(0, position - 3); // 3 detik sebelum kata kunci
+      const end = Math.min(videoDuration, position + 15); // 15 detik setelahnya
       
-      // Hitung posisi dalam video (asumsi 2 kata/detik)
-      const position = i / 2;
-      moments.push({
-        start: Math.max(0, position - windowSize),
-        end: position + windowSize,
-        score: score
-      });
+      // Hindari overlap yang terlalu banyak
+      const overlaps = moments.some(m => (start < m.end && end > m.start));
+      if (!overlaps) {
+        const snippet = words.slice(Math.max(0, i - 2), Math.min(words.length, i + 6)).join(" ");
+        moments.push({
+          start,
+          end,
+          score: 1 + (word.length / 10),
+          title: `"${snippet}..."`
+        });
+      }
     }
   }
-  
-  return moments;
-}
 
-/** Deteksi momen berdasarkan jeda diam (simulasi) */
-function detectSilenceMoments(
-  videoDuration: number,
-  minSilence = 1.5
-): { start: number; end: number; score: number }[] {
-  // Simulasi deteksi jeda diam (dalam implementasi nyata, gunakan analisis audio)
-  const moments: { start: number; end: number; score: number }[] = [];
-  
-  // Cari jeda 1.5-3 detik di seluruh video
-  for (let i = 0; i < videoDuration; i += 5) {
-    if (i + minSilence < videoDuration) {
+  // Jika tidak ada kata kunci yang terdeteksi, fallback bagi video secara merata
+  if (moments.length === 0) {
+    const clipLen = Math.min(30, videoDuration / maxClips);
+    for (let i = 0; i < maxClips; i++) {
       moments.push({
-        start: i,
-        end: i + minSilence,
-        score: 0.8
+        start: i * clipLen,
+        end: Math.min(videoDuration, (i + 1) * clipLen),
+        score: 0.5,
+        title: `Bagian ${i + 1}`
       });
     }
   }
-  
-  return moments;
+
+  // Urutkan berdasarkan skor tertinggi dan ambil sesuai maxClips
+  return moments
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxClips)
+    .map((m, idx) => ({ ...m, title: m.title || `Klip ${idx + 1}` }));
 }
