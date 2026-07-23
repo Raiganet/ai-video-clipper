@@ -1,13 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Upload, Play, Sparkles, Download, Loader2, Scissors } from "lucide-react";
+import { Upload, Play, Sparkles, Download, Loader2, Scissors, Brain } from "lucide-react";
 import YouTubeInput from "@/components/YouTubeInput";
 import VideoUploader from "@/components/VideoUploader";
 import CaptionStyleSelector from "@/components/CaptionStyleSelector";
 import SettingsPanel from "@/components/SettingsPanel";
-// SATU-SATUNYA import terkait ffmpeg yang boleh ada:
 import { trimVideo, getVideoDuration } from "@/lib/ffmpeg";
+import { detectViralMoments, ViralMoment } from "@/lib/viralDetector";
 
 type Clip = {
   id: number;
@@ -16,6 +16,7 @@ type Clip = {
   duration: number;
   blobUrl: string | null;
   processing: boolean;
+  isAiDetected: boolean;
 };
 
 function fmt(t: number) {
@@ -25,7 +26,7 @@ function fmt(t: number) {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"youtube" | "upload">("youtube");
+  const [activeTab, setActiveTab] = useState<"youtube" | "upload">("upload");
   const [videoUrl, setVideoUrl] = useState("");
   const [uploadedVideo, setUploadedVideo] = useState<File | null>(null);
   const [captionStyle, setCaptionStyle] = useState("karaoke");
@@ -77,39 +78,66 @@ export default function Home() {
     setProgress(0);
 
     try {
-      setStatus("Memuat mesin video (sekali saja)...");
+      setStatus("Membaca durasi video...");
       const duration = await getVideoDuration(uploadedVideo);
       if (!duration || duration <= 0) throw new Error("Durasi video tidak valid");
 
-      const clipLen = 20;
-      const count = Math.min(
-        settings.previewCount,
-        Math.max(1, Math.floor(duration / clipLen))
-      );
-      try {
-    setStatus("Memuat mesin video...");
-    const duration = await getVideoDuration(uploadedVideo);
-    
-    // Tambahkan transkripsi
-    setStatus("Transkripsi audio...");
-    const transcript = await transcribeAudio(uploadedVideo);
-    setStatus("Mendeteksi momen viral...");
-    
-    // ... kode selanjutnya
-  } catch (error) {
-    // ... kode error
-  }
-}
-      const generated: Clip[] = Array.from({ length: count }, (_, i) => ({
+      let viralMoments: ViralMoment[] = [];
+
+      if (settings.aiMode === "transcript") {
+        setStatus("Mentranskripsi audio dengan AI (Groq)...");
+        try {
+          const formData = new FormData();
+          formData.append("file", uploadedVideo);
+
+          const res = await fetch("/api/transcribe", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || "Transkripsi gagal");
+          }
+
+          const data = await res.json();
+          setStatus("Mendeteksi momen viral dari transkripsi...");
+          viralMoments = detectViralMoments(data.transcript, duration, settings.previewCount);
+        } catch (aiError) {
+          console.warn("AI Transcription failed, falling back to basic split:", aiError);
+          setStatus("AI gagal, menggunakan pembagian video otomatis...");
+          const clipLen = Math.min(30, duration / settings.previewCount);
+          viralMoments = Array.from({ length: settings.previewCount }, (_, i) => ({
+            start: i * clipLen,
+            end: Math.min(duration, (i + 1) * clipLen),
+            score: 0.5,
+            title: `Bagian ${i + 1}`,
+          }));
+        }
+      } else {
+        setStatus("Membagi video secara otomatis...");
+        const clipLen = Math.min(30, duration / settings.previewCount);
+        viralMoments = Array.from({ length: settings.previewCount }, (_, i) => ({
+          start: i * clipLen,
+          end: Math.min(duration, (i + 1) * clipLen),
+          score: 0.5,
+          title: `Bagian ${i + 1}`,
+        }));
+      }
+
+      const generated: Clip[] = viralMoments.map((moment, i) => ({
         id: i + 1,
-        title: `Klip ${i + 1}`,
-        start: i * clipLen,
-        duration: Math.min(clipLen, duration - i * clipLen),
+        title: moment.title.length > 40 ? moment.title.substring(0, 40) + "..." : moment.title,
+        start: moment.start,
+        duration: moment.end - moment.start,
         blobUrl: null,
         processing: false,
+        isAiDetected: moment.score > 0.8,
       }));
+
       setClips(generated);
 
+      // Auto-proses klip pertama
       setStatus(`Memproses ${generated[0].title}...`);
       await processClip(generated[0], uploadedVideo);
       setSelectedId(generated[0].id);
@@ -170,7 +198,7 @@ export default function Home() {
           <div className="inline-flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-4 py-2 mb-4">
             <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
             <span className="text-emerald-400 text-sm">
-              Proses 100% di browser • gratis
+              Proses 100% di browser • Gratis & Aman
             </span>
           </div>
           <h1 className="text-4xl md:text-5xl font-bold mb-4">
@@ -178,7 +206,7 @@ export default function Home() {
             <span className="text-emerald-500">klip viral</span>
           </h1>
           <p className="text-zinc-400 text-lg">
-            Upload video, klik sekali. Video dipotong langsung di perangkatmu.
+            Upload video, biarkan AI mencari momen terbaik, dan potong langsung di perangkatmu.
           </p>
         </div>
 
@@ -192,7 +220,7 @@ export default function Home() {
                   : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
               }`}
             >
-              <Play className="w-5 h-5" /> YouTube
+              <Play className="w-5 h-5" /> YouTube Link
             </button>
             <button
               onClick={() => setActiveTab("upload")}
@@ -202,7 +230,7 @@ export default function Home() {
                   : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
               }`}
             >
-              <Upload className="w-5 h-5" /> Upload video
+              <Upload className="w-5 h-5" /> Upload Video
             </button>
           </div>
 
@@ -232,7 +260,7 @@ export default function Home() {
               </>
             ) : (
               <>
-                <Sparkles className="w-5 h-5" /> Cari Preview
+                <Brain className="w-5 h-5" /> Cari Momen Viral dengan AI
               </>
             )}
           </button>
@@ -247,7 +275,7 @@ export default function Home() {
           )}
 
           <p className="text-center text-zinc-600 text-sm mt-4">
-            Pertama kali klik men-download mesin video (~30MB), lalu di-cache browser.
+            *Transkripsi AI membutuhkan file &lt; 25MB. Jika lebih besar, sistem akan otomatis membagi video secara merata.
           </p>
         </div>
 
@@ -269,19 +297,26 @@ export default function Home() {
                       : "border-zinc-700 bg-zinc-800 hover:border-zinc-600"
                   }`}
                 >
-                  <div className="font-semibold">{c.title}</div>
-                  <div className="text-xs text-zinc-400 mt-1">
+                  <div className="font-semibold text-sm mb-1">{c.title}</div>
+                  <div className="text-xs text-zinc-400">
                     {fmt(c.start)} – {fmt(c.start + c.duration)}
                   </div>
-                  <div className="text-xs mt-2">
+                  <div className="text-xs mt-3 flex items-center gap-2">
                     {c.processing ? (
-                      <span className="text-emerald-400">Memproses...</span>
+                      <span className="text-emerald-400 flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" /> Memproses...
+                      </span>
                     ) : c.blobUrl ? (
-                      <span className="text-emerald-400">✓ Siap</span>
+                      <span className="text-emerald-400 flex items-center gap-1">✓ Siap Download</span>
                     ) : (
                       <span className="text-zinc-500">Klik untuk proses</span>
                     )}
-                  </div>
+                 3>
+                  {c.isAiDetected && (
+                    <div className="mt-2 inline-flex items-center gap-1 text-[10px] bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded-full">
+                      <Sparkles className="w-3 h-3" /> AI Detected
+                    </div>
+                  )}
                 </button>
               ))}
             </div>
@@ -291,7 +326,7 @@ export default function Home() {
                 <video
                   src={selectedClip.blobUrl}
                   controls
-                  className="w-full rounded-lg bg-black"
+                  className="w-full rounded-lg bg-black max-h-[400px]"
                 />
                 <button
                   onClick={() => handleDownload(selectedClip)}
