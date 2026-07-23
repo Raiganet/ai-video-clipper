@@ -14,7 +14,6 @@ export function detectViralMoments(
   const words = transcript.split(/\s+/).filter(Boolean);
   const wordsPerSecond = words.length / Math.max(1, videoDuration);
   
-  // Kata kunci yang sering menandakan momen viral/penarik perhatian
   const emotionalKeywords = [
     "wow", "keren", "hebat", "luar biasa", "mengagumkan", "kagum", 
     "terkesan", "penting", "rahasia", "tips", "hack", "jangan", "pernah", "terbaik"
@@ -28,10 +27,9 @@ export function detectViralMoments(
     
     if (isKeyword) {
       const position = i / wordsPerSecond;
-      const start = Math.max(0, position - 3); // 3 detik sebelum kata kunci
-      const end = Math.min(videoDuration, position + 15); // 15 detik setelahnya
+      const start = Math.max(0, position - 3);
+      const end = Math.min(videoDuration, position + 15);
       
-      // Hindari overlap yang terlalu banyak
       const overlaps = moments.some(m => (start < m.end && end > m.start));
       if (!overlaps) {
         const snippet = words.slice(Math.max(0, i - 2), Math.min(words.length, i + 6)).join(" ");
@@ -45,7 +43,6 @@ export function detectViralMoments(
     }
   }
 
-  // Jika tidak ada kata kunci yang terdeteksi, fallback bagi video secara merata
   if (moments.length === 0) {
     const clipLen = Math.min(30, videoDuration / maxClips);
     for (let i = 0; i < maxClips; i++) {
@@ -58,7 +55,6 @@ export function detectViralMoments(
     }
   }
 
-  // Urutkan berdasarkan skor tertinggi dan ambil sesuai maxClips
   return moments
     .sort((a, b) => b.score - a.score)
     .slice(0, maxClips)
