@@ -1,29 +1,31 @@
 export function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
+  const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-export function extractYouTubeId(url: string): string | null {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)/,
-    /youtube\.com\/embed\/([^&\s]+)/,
-    /youtube\.com\/v\/([^&\s]+)/,
-  ];
+export function extractYouTubeId(rawUrl: string): string | null {
+  try {
+    const url = new URL(rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`);
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
 
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match) return match[1];
+    if (host === "youtu.be") {
+      const id = url.pathname.split("/").filter(Boolean)[0];
+      return id && /^[\w-]{6,20}$/.test(id) ? id : null;
+    }
+
+    if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+      if (url.pathname === "/watch") {
+        const id = url.searchParams.get("v");
+        return id && /^[\w-]{6,20}$/.test(id) ? id : null;
+      }
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (["embed", "shorts", "live"].includes(parts[0]) && parts[1] && /^[\w-]{6,20}$/.test(parts[1])) {
+        return parts[1];
+      }
+    }
+  } catch {
+    return null;
   }
-
   return null;
-}
-
-export async function getYouTubeVideoInfo(videoId: string) {
-  // Di production, gunakan YouTube Data API atau ytdl-core
-  return {
-    title: "Video Title",
-    duration: 600,
-    thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-  };
 }

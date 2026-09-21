@@ -1,239 +1,614 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { Upload, Play, Sparkles, Download, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Brain, Captions, Download, Loader2, Play, RefreshCw, ScanFace, Scissors, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import YouTubeInput from "@/components/YouTubeInput";
 import VideoUploader from "@/components/VideoUploader";
 import CaptionStyleSelector from "@/components/CaptionStyleSelector";
-import SettingsPanel from "@/components/SettingsPanel";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
+import ClipEditor from "@/components/ClipEditor";
+import SettingsPanel, { ClipperSettings } from "@/components/SettingsPanel";
+import { getOutputSize, getVideoMetadata, renderVideoClip, type VideoMetadata } from "@/lib/ffmpeg";
+import { detectViralMoments, ViralMoment } from "@/lib/viralDetector";
+import { transcribeVideo, type TranscriptSegment } from "@/lib/transcription";
+import { buildCaptionCues, type CaptionCue, type CaptionStyle } from "@/lib/captions";
+import { detectFaceFocus, type CropFocus } from "@/lib/faceTracking";
+
+interface Clip {
+  id: number;
+  title: string;
+  start: number;
+  duration: number;
+  blobUrl: string | null;
+  processing: boolean;
+  isAiDetected: boolean;
+  score: number;
+  reason?: string;
+  renderSignature: string | null;
+}
+
+function fmt(t: number) {
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function basicSplit(duration: number, count: number): ViralMoment[] {
+  const safeCount = Math.max(1, Math.min(count, Math.ceil(duration / 5)));
+  const spacing = duration / safeCount;
+  return Array.from({ length: safeCount }, (_, index) => {
+    const start = index * spacing;
+    const clipDuration = Math.min(30, spacing);
+    return {
+      start,
+      end: Math.min(duration, start + Math.max(5, clipDuration)),
+      score: 0.5,
+      title: `Bagian ${index + 1}`,
+      isAiDetected: false,
+      reason: "pembagian otomatis",
+    };
+  });
+}
+
+function cueKey(cues: CaptionCue[]) {
+  if (cues.length === 0) return "no-cues";
+  let hash = 2166136261;
+  const raw = cues.map((cue) => `${cue.start.toFixed(2)}|${cue.end.toFixed(2)}|${cue.text}`).join("~");
+  for (let index = 0; index < raw.length; index += 1) {
+    hash ^= raw.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function renderSignature(
+  clip: Pick<Clip, "start" | "duration">,
+  captionStyle: CaptionStyle,
+  settings: Pick<ClipperSettings, "crop" | "smartCrop">,
+  cues: CaptionCue[]
+) {
+  const effectiveCaption = captionStyle === "none" || cues.length === 0 ? "none" : captionStyle;
+  return [
+    "v3",
+    settings.crop,
+    settings.smartCrop,
+    effectiveCaption,
+    clip.start.toFixed(2),
+    clip.duration.toFixed(2),
+    cueKey(cues),
+  ].join("|");
+}
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"youtube" | "upload">("youtube");
+  const [activeTab, setActiveTab] = useState<"youtube" | "upload">("upload");
   const [videoUrl, setVideoUrl] = useState("");
   const [uploadedVideo, setUploadedVideo] = useState<File | null>(null);
-  const [captionStyle, setCaptionStyle] = useState("karaoke");
-  const [settings, setSettings] = useState({
+  const [videoMeta, setVideoMeta] = useState<VideoMetadata | null>(null);
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>("karaoke");
+  const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
+  const [captionOverrides, setCaptionOverrides] = useState<Record<number, CaptionCue[]>>({});
+  const [faceFocuses, setFaceFocuses] = useState<Record<number, CropFocus>>({});
+  const [settings, setSettings] = useState<ClipperSettings>({
     previewCount: 5,
     vibe: "viral",
     crop: "auto",
+    smartCrop: "face",
     aiMode: "transcript",
   });
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingProgress, setProcessingProgress] = useState(0);
-  const [processedVideoUrl, setProcessedVideoUrl] = useState<string | null>(null);
-  const [ffmpeg, setFfmpeg] = useState<FFmpeg | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [status, setStatus] = useState("");
+  const [warning, setWarning] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [clips, setClips] = useState<Clip[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const clipsRef = useRef<Clip[]>([]);
 
-  // Load FFmpeg saat component mount
+  const selectedClip = useMemo(
+    () => clips.find((clip) => clip.id === selectedId) || null,
+    [clips, selectedId]
+  );
+
+  const outputInfo = useMemo(() => {
+    if (!videoMeta) return null;
+    return getOutputSize(settings.crop, videoMeta.width, videoMeta.height);
+  }, [settings.crop, videoMeta]);
+
   useEffect(() => {
-    const loadFFmpeg = async () => {
-      const ffmpegInstance = new FFmpeg();
-      await ffmpegInstance.load({
-        coreURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js",
-        wasmURL: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm"
+    clipsRef.current = clips;
+  }, [clips]);
+
+  useEffect(() => {
+    return () => {
+      clipsRef.current.forEach((clip) => {
+        if (clip.blobUrl) URL.revokeObjectURL(clip.blobUrl);
       });
-      setFfmpeg(ffmpegInstance);
     };
-    loadFFmpeg();
   }, []);
 
-  const handleProcess = async () => {
-    if (!uploadedVideo) {
-      alert("Silakan upload video terlebih dahulu");
-      return;
-    }
+  const getCuesForClip = (clip: Clip, segments = transcriptSegments) => {
+    const custom = captionOverrides[clip.id];
+    if (custom) return custom;
+    return buildCaptionCues(segments, clip.start, clip.duration, captionStyle);
+  };
 
-    if (!ffmpeg) {
-      alert("FFmpeg belum siap. Mohon tunggu sebentar...");
-      return;
-    }
+  const getCurrentSignature = (clip: Clip) => (
+    renderSignature(clip, captionStyle, settings, getCuesForClip(clip))
+  );
 
-    setIsProcessing(true);
-    setProcessingProgress(0);
-    setProcessedVideoUrl(null);
+  const resetClips = () => {
+    setClips((previous) => {
+      previous.forEach((clip) => {
+        if (clip.blobUrl) URL.revokeObjectURL(clip.blobUrl);
+      });
+      return [];
+    });
+    setCaptionOverrides({});
+    setFaceFocuses({});
+    setSelectedId(null);
+  };
+
+  const handleUpload = (file: File | null) => {
+    resetClips();
+    setWarning("");
+    setStatus("");
+    setProgress(0);
+    setTranscriptSegments([]);
+    setVideoMeta(null);
+    setUploadedVideo(file);
+  };
+
+  const processClip = async (
+    clip: Clip,
+    file: File,
+    meta: VideoMetadata,
+    segments: TranscriptSegment[],
+    onProgress?: (percent: number, phase: "captions" | "render") => void
+  ) => {
+    setClips((previous) => previous.map((item) => item.id === clip.id ? { ...item, processing: true } : item));
+    const cues = captionOverrides[clip.id] ?? buildCaptionCues(segments, clip.start, clip.duration, captionStyle);
+    const effectiveCaptionStyle: CaptionStyle = captionStyle !== "none" && cues.length > 0 ? captionStyle : "none";
+    const signature = renderSignature(clip, captionStyle, settings, cues);
+
+    let cropFocus: CropFocus = faceFocuses[clip.id] ?? {
+      x: 0.5,
+      y: 0.5,
+      confidence: 0,
+      detectedSamples: 0,
+      totalSamples: 0,
+      mode: "center",
+    };
+
+    if (settings.smartCrop === "face" && settings.crop !== "original" && !faceFocuses[clip.id]) {
+      try {
+        setStatus("Smart Face: mencari posisi subjek...");
+        setProgress(2);
+        cropFocus = await detectFaceFocus(file, clip.start, clip.duration, (percent) => {
+          setProgress(Math.max(2, Math.round(percent * 0.12)));
+        });
+        setFaceFocuses((previous) => ({ ...previous, [clip.id]: cropFocus }));
+      } catch (error) {
+        console.warn("Smart Face failed, using center crop", error);
+        cropFocus = { ...cropFocus, mode: "center" };
+        setFaceFocuses((previous) => ({ ...previous, [clip.id]: cropFocus }));
+        setWarning("Smart Face tidak dapat dimuat di browser/jaringan ini. Render tetap dilanjutkan dengan center-crop.");
+      }
+    }
 
     try {
-      // Tulis file ke memory FFmpeg
-      await ffmpeg.writeFile("input.mp4", await fetchFile(uploadedVideo));
-
-      // Proses trim video (detik 0-30 sebagai contoh)
-      // Di sini nanti bisa diganti dengan AI logic untuk detect momen viral
-      await ffmpeg.exec([
-        "-i", "input.mp4",
-        "-ss", "0",
-        "-t", "30",
-        "-c", "copy",
-        "output.mp4"
-      ]);
-
-      // Baca hasil
-      const data = await ffmpeg.readFile("output.mp4");
-      
-      // Buat blob URL untuk preview
-      const blob = new Blob([data], { type: "video/mp4" });
+      const blob = await renderVideoClip(file, {
+        start: clip.start,
+        duration: clip.duration,
+        ratio: settings.crop,
+        captionStyle: effectiveCaptionStyle,
+        transcriptSegments: segments,
+        captionCues: cues,
+        cropFocus: settings.smartCrop === "face" ? cropFocus : { x: 0.5, y: 0.5 },
+        sourceWidth: meta.width,
+        sourceHeight: meta.height,
+        onProgress,
+      });
       const url = URL.createObjectURL(blob);
-      setProcessedVideoUrl(url);
-
-      // Cleanup
-      await ffmpeg.deleteFile("input.mp4");
-      await ffmpeg.deleteFile("output.mp4");
-
-      setProcessingProgress(100);
-      
+      setClips((previous) => previous.map((item) => {
+        if (item.id !== clip.id) return item;
+        if (item.blobUrl) URL.revokeObjectURL(item.blobUrl);
+        return { ...item, blobUrl: url, processing: false, renderSignature: signature };
+      }));
     } catch (error) {
-      console.error("Error processing video:", error);
-      alert(`Terjadi kesalahan: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setIsProcessing(false);
+      setClips((previous) => previous.map((item) => item.id === clip.id ? { ...item, processing: false } : item));
+      throw error;
     }
   };
 
-  const handleDownload = () => {
-    if (!processedVideoUrl) return;
-    
-    const a = document.createElement("a");
-    a.href = processedVideoUrl;
-    a.download = `ai-clip-${Date.now()}.mp4`;
-    a.click();
+  const handleFindPreviews = async () => {
+    if (!uploadedVideo) return;
+
+    setBusy(true);
+    resetClips();
+    setProgress(0);
+    setWarning("");
+    setTranscriptSegments([]);
+
+    try {
+      setStatus("Membaca metadata video...");
+      const metadata = await getVideoMetadata(uploadedVideo);
+      setVideoMeta(metadata);
+      const duration = metadata.duration;
+      if (!duration || duration <= 0) throw new Error("Durasi video tidak valid");
+
+      let moments: ViralMoment[];
+      let segmentsForRender: TranscriptSegment[] = [];
+
+      if (settings.aiMode === "transcript") {
+        try {
+          setStatus("Menyiapkan audio 16 kHz untuk AI...");
+          const transcript = await transcribeVideo(uploadedVideo, duration, ({ phase, percent, current, total }) => {
+            if (phase === "extract") {
+              setStatus(`Mengekstrak audio ${current}/${total}...`);
+              setProgress(Math.round(percent * 0.4));
+            } else {
+              setStatus(`Transkripsi AI ${current}/${total}...`);
+              setProgress(40 + Math.round(percent * 0.38));
+            }
+          });
+
+          segmentsForRender = transcript.segments;
+          setTranscriptSegments(transcript.segments);
+          setStatus("Menganalisis timestamp dan memilih momen terbaik...");
+          setProgress(80);
+          moments = detectViralMoments(
+            transcript.segments,
+            duration,
+            settings.previewCount,
+            settings.vibe
+          );
+        } catch (error) {
+          console.warn("AI transcription failed; using safe split fallback", error);
+          const message = error instanceof Error ? error.message : "Transkripsi AI gagal";
+          setWarning(`${message}. Sistem memakai Pembagian cepat; caption otomatis tidak tersedia.`);
+          moments = basicSplit(duration, settings.previewCount);
+        }
+      } else {
+        setStatus("Membagi video tanpa AI...");
+        moments = basicSplit(duration, settings.previewCount);
+      }
+
+      const generated: Clip[] = moments.map((moment, index) => ({
+        id: index + 1,
+        title: moment.title,
+        start: moment.start,
+        duration: Math.max(0.1, moment.end - moment.start),
+        blobUrl: null,
+        processing: false,
+        isAiDetected: moment.isAiDetected,
+        score: moment.score,
+        reason: moment.reason,
+        renderSignature: null,
+      }));
+
+      if (generated.length === 0) throw new Error("Tidak ada klip yang dapat dibuat");
+
+      setClips(generated);
+      setSelectedId(generated[0].id);
+      setStatus(`Render preview pertama: ${generated[0].title}`);
+      await processClip(generated[0], uploadedVideo, metadata, segmentsForRender, (percent, phase) => {
+        setStatus(phase === "captions" ? "Membuat layer caption..." : `Render ${settings.crop} + caption ke MP4...`);
+        const local = phase === "captions" ? percent * 0.2 : 20 + percent * 0.8;
+        setProgress(82 + Math.round(local * 0.18));
+      });
+      setProgress(100);
+      setStatus("Selesai. Pilih klip, edit trim/caption, lalu render sesuai kebutuhan.");
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus("");
+      setWarning(`Gagal memproses video: ${message}`);
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => setProgress(0), 900);
+    }
   };
+
+  const handleRenderClip = async (clip: Clip) => {
+    setSelectedId(clip.id);
+    if (!uploadedVideo || clip.processing || busy) return;
+
+    let metadata = videoMeta;
+    if (!metadata) {
+      metadata = await getVideoMetadata(uploadedVideo);
+      setVideoMeta(metadata);
+    }
+
+    setBusy(true);
+    setProgress(0);
+    setWarning("");
+    setStatus(`Menyiapkan render: ${clip.title}`);
+
+    try {
+      await processClip(clip, uploadedVideo, metadata, transcriptSegments, (percent, phase) => {
+        setStatus(phase === "captions" ? "Membuat layer caption..." : "Render video, smart crop, audio, dan caption...");
+        setProgress(phase === "captions" ? Math.round(percent * 0.2) : 20 + Math.round(percent * 0.8));
+      });
+      if (captionStyle !== "none" && getCuesForClip(clip).length === 0) {
+        setWarning("Klip berhasil dirender, tetapi tidak ada caption bertimestamp. Kamu dapat menambah caption manual di editor.");
+      }
+      setStatus("Preview/export siap.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setWarning(`Gagal membuat preview: ${message}`);
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => setProgress(0), 900);
+    }
+  };
+
+  const handleTrimChange = (start: number, end: number) => {
+    if (!selectedClip || !videoMeta) return;
+    const safeStart = Math.max(0, Math.min(start, videoMeta.duration - 1));
+    const safeEnd = Math.max(safeStart + 1, Math.min(end, videoMeta.duration));
+    setClips((previous) => previous.map((clip) => clip.id === selectedClip.id
+      ? { ...clip, start: safeStart, duration: safeEnd - safeStart }
+      : clip));
+    setCaptionOverrides((previous) => {
+      const next = { ...previous };
+      delete next[selectedClip.id];
+      return next;
+    });
+    setFaceFocuses((previous) => {
+      const next = { ...previous };
+      delete next[selectedClip.id];
+      return next;
+    });
+    setStatus("Trim diperbarui. Caption otomatis dan Smart Face akan dihitung ulang saat render.");
+  };
+
+  const selectedCues = selectedClip ? getCuesForClip(selectedClip) : [];
+
+  const setSelectedCues = (nextCues: CaptionCue[]) => {
+    if (!selectedClip) return;
+    setCaptionOverrides((previous) => ({ ...previous, [selectedClip.id]: nextCues }));
+  };
+
+  const handleCueTextChange = (index: number, text: string) => {
+    const next = selectedCues.map((cue, cueIndex) => cueIndex === index ? { ...cue, text } : cue);
+    setSelectedCues(next);
+  };
+
+  const handleCueDelete = (index: number) => {
+    setSelectedCues(selectedCues.filter((_, cueIndex) => cueIndex !== index));
+  };
+
+  const handleCueAdd = () => {
+    if (!selectedClip) return;
+    const lastEnd = selectedCues.length > 0 ? selectedCues[selectedCues.length - 1].end : 0;
+    let start = Math.min(Math.max(0, lastEnd), Math.max(0, selectedClip.duration - 0.5));
+    let end = Math.min(selectedClip.duration, start + 2.5);
+    if (end - start < 0.4) {
+      start = Math.max(0, selectedClip.duration - 2);
+      end = selectedClip.duration;
+    }
+    setSelectedCues([...selectedCues, { start, end, text: "Tulis caption di sini" }]);
+  };
+
+  const handleResetCaptions = () => {
+    if (!selectedClip) return;
+    setCaptionOverrides((previous) => {
+      const next = { ...previous };
+      delete next[selectedClip.id];
+      return next;
+    });
+  };
+
+  const handleCaptionStyleChange = (style: CaptionStyle) => {
+    setCaptionStyle(style);
+    setCaptionOverrides({});
+  };
+
+  const handleSettingsChange = (next: ClipperSettings) => {
+    const smartChanged = next.smartCrop !== settings.smartCrop;
+    setSettings(next);
+    if (smartChanged) setFaceFocuses({});
+  };
+
+  const handleDownload = (clip: Clip) => {
+    if (!clip.blobUrl) return;
+    const ratioName = outputInfo?.ratio || settings.crop;
+    const anchor = document.createElement("a");
+    anchor.href = clip.blobUrl;
+    anchor.download = `ai-clip-${clip.id}-${ratioName}-${captionStyle}-${Date.now()}.mp4`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  };
+
+  const canProcess = activeTab === "upload" && Boolean(uploadedVideo) && !busy;
+  const selectedIsStale = Boolean(selectedClip?.blobUrl && selectedClip.renderSignature !== getCurrentSignature(selectedClip));
+  const selectedIsFresh = Boolean(selectedClip?.blobUrl && !selectedIsStale);
+  const selectedFace = selectedClip ? faceFocuses[selectedClip.id] : undefined;
 
   return (
     <div className="min-h-screen bg-black text-white">
-      {/* Header */}
       <header className="border-b border-zinc-800">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
-              <Sparkles className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-bold text-xl">AI Clipper</span>
-            <span className="bg-yellow-500/20 text-yellow-500 text-xs px-2 py-1 rounded-full">
-              BETA
-            </span>
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-2">
+          <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
+            <Sparkles className="w-5 h-5 text-white" />
           </div>
+          <span className="font-bold text-xl">AI Clipper</span>
+          <span className="bg-emerald-500/15 text-emerald-400 text-xs px-2 py-1 rounded-full">STAGE 3</span>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-5xl mx-auto px-4 py-12">
-        {/* Hero */}
         <div className="text-center mb-12">
           <div className="inline-flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-4 py-2 mb-4">
-            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-            <span className="text-emerald-400 text-sm">
-              Mode demo • hasil asli dari video contoh
-            </span>
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <span className="text-emerald-400 text-sm">Clipping & smart framing lokal • AI menerima audio terkompresi</span>
           </div>
           <h1 className="text-4xl md:text-5xl font-bold mb-4">
-            Ubah video panjang jadi{" "}
-            <span className="text-emerald-500">klip viral</span>
+            Ubah video panjang jadi <span className="text-emerald-500">klip siap upload</span>
           </h1>
-          <p className="text-zinc-400 text-lg">
-            Tempel link, klik sekali. AI yang cariin momen terbaiknya.
-          </p>
+          <p className="text-zinc-400 text-lg">AI memilih momen, lalu kamu bisa trim, edit caption, dan atur framing sebelum render MP4.</p>
         </div>
 
-        {/* Main Card */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-8">
-          {/* Tabs */}
           <div className="flex gap-2 mb-6">
-            <button
-              onClick={() => setActiveTab("youtube")}
-              className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all ${
-                activeTab === "youtube"
-                  ? "bg-red-600 text-white"
-                  : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-              }`}
-            >
-              <Play className="w-5 h-5" />
-              YouTube
+            <button type="button" onClick={() => setActiveTab("youtube")} className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all ${activeTab === "youtube" ? "bg-red-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>
+              <Play className="w-5 h-5" /> YouTube Link <span className="text-[10px] opacity-70">BETA</span>
             </button>
-            <button
-              onClick={() => setActiveTab("upload")}
-              className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all ${
-                activeTab === "upload"
-                  ? "bg-emerald-600 text-white"
-                  : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-              }`}
-            >
-              <Upload className="w-5 h-5" />
-              Upload video
+            <button type="button" onClick={() => setActiveTab("upload")} className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-all ${activeTab === "upload" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>
+              <Upload className="w-5 h-5" /> Upload Video
             </button>
           </div>
 
-          {/* Content */}
           {activeTab === "youtube" ? (
-            <YouTubeInput value={videoUrl} onChange={setVideoUrl} />
+            <YouTubeInput value={videoUrl} onChange={setVideoUrl} onUseUpload={() => setActiveTab("upload")} />
           ) : (
-            <VideoUploader onUpload={setUploadedVideo} video={uploadedVideo} />
+            <VideoUploader onUpload={handleUpload} video={uploadedVideo} />
           )}
 
-          {/* Caption Style */}
           <div className="mt-8">
-            <label className="text-sm text-zinc-400 mb-3 block">
-              GAYA CAPTION <span className="text-zinc-600">(Clean disarankan)</span>
-            </label>
-            <CaptionStyleSelector value={captionStyle} onChange={setCaptionStyle} />
+            <label className="text-sm text-zinc-400 mb-3 block">GAYA CAPTION</label>
+            <CaptionStyleSelector value={captionStyle} onChange={handleCaptionStyleChange} available={settings.aiMode === "transcript"} />
           </div>
 
-          {/* Process Button */}
           <button
-            onClick={handleProcess}
-            disabled={isProcessing || !uploadedVideo || !ffmpeg}
+            type="button"
+            onClick={handleFindPreviews}
+            disabled={!canProcess}
             className="w-full mt-8 bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-semibold py-3 px-6 rounded-lg transition-all duration-200 flex items-center justify-center gap-2"
           >
-            {isProcessing ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                Memproses... {processingProgress}%
-              </>
+            {busy ? (
+              <><Loader2 className="w-5 h-5 animate-spin" /> {status || "Memproses..."}</>
+            ) : activeTab === "youtube" ? (
+              <><Upload className="w-5 h-5" /> Gunakan Upload Video untuk Memproses</>
+            ) : !uploadedVideo ? (
+              <><Upload className="w-5 h-5" /> Pilih video terlebih dahulu</>
             ) : (
-              <>
-                <Sparkles className="w-5 h-5" />
-                Cari Preview
-              </>
+              <><Brain className="w-5 h-5" /> Cari Momen & Buat Draft Klip</>
             )}
           </button>
 
-          {/* Progress Bar */}
-          {isProcessing && (
-            <div className="mt-4 bg-zinc-800 rounded-full h-2 overflow-hidden">
-              <div 
-                className="bg-emerald-500 h-full transition-all duration-300"
-                style={{ width: `${processingProgress}%` }}
-              />
+          {(busy || progress > 0) && (
+            <div className="mt-4">
+              <div className="flex justify-between text-xs text-zinc-500 mb-2"><span>{status || "Memproses..."}</span><span>{progress}%</span></div>
+              <div className="bg-zinc-800 rounded-full h-2 overflow-hidden">
+                <div className="bg-emerald-500 h-full transition-all duration-300" style={{ width: `${progress}%` }} />
+              </div>
             </div>
           )}
 
-          {/* Video Preview */}
-          {processedVideoUrl && (
-            <div className="mt-8 p-6 bg-zinc-800/50 rounded-lg border border-zinc-700">
-              <h3 className="text-xl font-bold mb-4">Preview Klip</h3>
-              <video
-                ref={videoRef}
-                src={processedVideoUrl}
-                controls
-                className="w-full rounded-lg bg-black"
-              />
-              <button
-                onClick={handleDownload}
-                className="btn-primary w-full mt-4"
-              >
-                <Download className="w-5 h-5" />
-                Download Video
-              </button>
+          {warning && (
+            <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-200 flex gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{warning}</span>
             </div>
           )}
 
-          <p className="text-center text-zinc-600 text-sm mt-4">
-            Tonton demo gratis • download & video sendiri untuk subscriber
-          </p>
+          <p className="text-center text-zinc-600 text-sm mt-4">Render dan Smart Face berjalan di browser. Video besar/HP RAM kecil tetap membutuhkan resource lebih tinggi.</p>
         </div>
 
-        {/* Settings */}
-        <SettingsPanel settings={settings} onChange={setSettings} />
+        {clips.length > 0 && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-8">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <h3 className="text-xl font-bold flex items-center gap-2"><Scissors className="w-5 h-5 text-emerald-500" /> Draft Klip ({clips.length})</h3>
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                {outputInfo && <span className="bg-zinc-800 border border-zinc-700 rounded-full px-3 py-1">{outputInfo.ratio} • {outputInfo.width}×{outputInfo.height}</span>}
+                <span className="bg-zinc-800 border border-zinc-700 rounded-full px-3 py-1 flex items-center gap-1"><Captions className="w-3 h-3" /> {captionStyle}</span>
+                <span className="bg-zinc-800 border border-zinc-700 rounded-full px-3 py-1 flex items-center gap-1"><ScanFace className="w-3 h-3" /> {settings.smartCrop === "face" ? "Smart Face" : "Center"}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+              {clips.map((clip) => {
+                const currentSignature = getCurrentSignature(clip);
+                const isFresh = clip.blobUrl && clip.renderSignature === currentSignature;
+                const isStale = clip.blobUrl && !isFresh;
+                return (
+                  <button
+                    key={clip.id}
+                    type="button"
+                    disabled={busy && selectedId !== clip.id}
+                    onClick={() => setSelectedId(clip.id)}
+                    className={`text-left p-4 rounded-lg border transition-all disabled:opacity-50 ${selectedId === clip.id ? "border-emerald-500 bg-emerald-500/10" : "border-zinc-700 bg-zinc-800 hover:border-zinc-600"}`}
+                  >
+                    <div className="font-semibold text-sm mb-1 line-clamp-2">{clip.title}</div>
+                    <div className="text-xs text-zinc-400">{fmt(clip.start)} – {fmt(clip.start + clip.duration)} • {clip.duration.toFixed(1)} dtk</div>
+                    {clip.reason && <div className="text-[11px] text-zinc-500 mt-2 line-clamp-2">{clip.reason}</div>}
+                    <div className="text-xs mt-3 flex items-center gap-2">
+                      {clip.processing ? (
+                        <span className="text-emerald-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Render...</span>
+                      ) : isFresh ? (
+                        <span className="text-emerald-400">✓ Export siap</span>
+                      ) : isStale ? (
+                        <span className="text-amber-300">↻ Perlu render ulang</span>
+                      ) : (
+                        <span className="text-zinc-500">Pilih untuk edit</span>
+                      )}
+                    </div>
+                    {clip.isAiDetected && (
+                      <div className="mt-2 inline-flex items-center gap-1 text-[10px] bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded-full"><Sparkles className="w-3 h-3" /> Timestamp AI • skor {clip.score.toFixed(1)}</div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {selectedClip && (
+              <div className="p-4 bg-zinc-800/50 rounded-lg border border-zinc-700">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                  <div>
+                    <div className="font-semibold">{selectedClip.title}</div>
+                    <div className="text-xs text-zinc-500 mt-1">Edit draft terlebih dahulu, kemudian render hanya saat diperlukan.</div>
+                  </div>
+                  {settings.smartCrop === "face" && selectedFace && (
+                    <span className={`text-xs px-3 py-1.5 rounded-full border ${selectedFace.mode === "face" ? "text-emerald-300 border-emerald-500/20 bg-emerald-500/10" : "text-zinc-400 border-zinc-700 bg-zinc-800"}`}>
+                      {selectedFace.mode === "face" ? `Smart Face ${selectedFace.detectedSamples}/${selectedFace.totalSamples} sampel` : "Smart Face → Center fallback"}
+                    </span>
+                  )}
+                </div>
+
+                {selectedClip.blobUrl ? (
+                  <>
+                    {selectedIsStale && (
+                      <div className="mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-200">
+                        Preview di bawah masih memakai trim/caption/framing sebelumnya. Editor tetap dapat digunakan lalu render ulang sekali saja.
+                      </div>
+                    )}
+                    <video src={selectedClip.blobUrl} controls playsInline className="w-auto max-w-full mx-auto rounded-lg bg-black max-h-[620px]" />
+                  </>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-zinc-700 bg-black/30 py-12 text-center text-zinc-500 text-sm">
+                    Klip ini belum dirender. Atur trim dan caption di bawah terlebih dahulu.
+                  </div>
+                )}
+
+                <ClipEditor
+                  clipStart={selectedClip.start}
+                  clipDuration={selectedClip.duration}
+                  videoDuration={videoMeta?.duration || selectedClip.start + selectedClip.duration}
+                  captionStyle={captionStyle}
+                  cues={selectedCues}
+                  disabled={busy}
+                  onTrimChange={handleTrimChange}
+                  onCueTextChange={handleCueTextChange}
+                  onCueDelete={handleCueDelete}
+                  onCueAdd={handleCueAdd}
+                  onResetCaptions={handleResetCaptions}
+                />
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+                  <button type="button" disabled={busy} onClick={() => handleRenderClip(selectedClip)} className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2">
+                    {busy && selectedClip.processing ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+                    {selectedIsFresh ? "Render ulang" : selectedClip.blobUrl ? "Render perubahan" : "Render klip"}
+                  </button>
+                  <button type="button" disabled={!selectedIsFresh} onClick={() => handleDownload(selectedClip)} className="bg-zinc-700 hover:bg-zinc-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2">
+                    <Download className="w-5 h-5" /> {selectedIsFresh ? `Download ${selectedClip.title}` : "Render dulu untuk download"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <SettingsPanel settings={settings} onChange={handleSettingsChange} />
       </main>
     </div>
   );
