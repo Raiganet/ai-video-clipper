@@ -41,8 +41,23 @@ async function crc32(blob: Blob) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function u16(value: number) { const a = new Uint8Array(2); new DataView(a.buffer).setUint16(0, value, true); return a; }
-function u32(value: number) { const a = new Uint8Array(4); new DataView(a.buffer).setUint32(0, value >>> 0, true); return a; }
+function u16(value: number): ArrayBuffer {
+  const a = new Uint8Array(2);
+  new DataView(a.buffer).setUint16(0, value, true);
+  return a.buffer;
+}
+
+function u32(value: number): ArrayBuffer {
+  const a = new Uint8Array(4);
+  new DataView(a.buffer).setUint32(0, value >>> 0, true);
+  return a.buffer;
+}
+
+function bytesToArrayBuffer(value: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(value.byteLength);
+  copy.set(value);
+  return copy.buffer;
+}
 function sanitize(value: string) { return value.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim().slice(0, 90) || "clip"; }
 function sanitizeZipPath(value: string) { return value.split("/").map((part) => sanitize(part)).filter(Boolean).join("/") || "file"; }
 
@@ -65,12 +80,12 @@ export async function buildStoredZip(files: Array<{ name: string; blob: Blob }>,
 
   const parts: BlobPart[] = [];
   for (const entry of entries) {
-    parts.push(u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0), u32(entry.crc), u32(entry.blob.size), u32(entry.blob.size), u16(entry.nameBytes.length), u16(0), entry.nameBytes, entry.blob);
+    parts.push(u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0), u32(entry.crc), u32(entry.blob.size), u32(entry.blob.size), u16(entry.nameBytes.length), u16(0), bytesToArrayBuffer(entry.nameBytes), entry.blob);
   }
   const centralOffset = offset;
   let centralSize = 0;
   entries.forEach((entry, index) => {
-    const header: BlobPart[] = [u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0), u32(entry.crc), u32(entry.blob.size), u32(entry.blob.size), u16(entry.nameBytes.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(entry.offset), entry.nameBytes];
+    const header: BlobPart[] = [u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0), u32(entry.crc), u32(entry.blob.size), u32(entry.blob.size), u16(entry.nameBytes.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(entry.offset), bytesToArrayBuffer(entry.nameBytes)];
     centralSize += 46 + entry.nameBytes.length;
     parts.push(...header);
     onProgress?.(45 + Math.round(((index + 1) / entries.length) * 45));
