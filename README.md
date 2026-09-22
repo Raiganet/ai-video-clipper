@@ -1,6 +1,6 @@
-# Kastriva AI Video Clipper — Stage 12
+# Kastriva AI Video Clipper — Stage 14
 
-Versi **1.3.0**. Stage 12 menambahkan **Campaign Workspace** di atas Stage 11: satu campaign dapat dikelola sebagai kumpulan narasi, source video, coverage kandidat klip, fokus narasi, dan checklist siap submit.
+Versi **1.5.0**. Stage 14 menambahkan **Campaign Submission Manager** di atas workflow multi-video Stage 13: shortlist final, approval/reject internal, catatan revisi, versioning render, checklist submission per platform, dan paket final campaign.
 
 ## Fitur utama
 
@@ -25,6 +25,47 @@ Versi **1.3.0**. Stage 12 menambahkan **Campaign Workspace** di atas Stage 11: s
 - Dashboard Admin menampilkan health/queue render infrastructure.
 
 
+
+
+
+## Stage 14 — Campaign Submission Manager
+
+Stage 14 menambahkan workflow final sebelum klip benar-benar dikirim/posting:
+
+- **Shortlist** kandidat final per campaign.
+- Keputusan internal **Pending / Approved / Perlu Revisi / Rejected**.
+- Catatan revisi dan catatan reviewer per klip.
+- **Versioning render** (`v1`, `v2`, dst.) berdasarkan perubahan render signature. Jika klip yang sudah Approved dirender menjadi versi baru, status internal otomatis kembali ke **Perlu Revisi**.
+- Checklist per platform: TikTok, Instagram Reels, YouTube Shorts, dan Campaign Portal.
+- Penanda Caption / Hashtag / Bio Link / Uploaded / Submitted beserta catatan atau URL posting.
+- **Final Package** hanya memasukkan klip yang sekaligus: Shortlist + Approved + status brief Siap Submit + render versi terbaru.
+- Paket final ZIP berisi MP4, SRT/VTT, Publish Pack, `manifest.json`, `manifest.csv`, dan README submission.
+
+Riwayat versi menyimpan metadata version/timestamp/signature, sedangkan browser tetap hanya mempertahankan file render aktif agar storage tidak membengkak. Data Submission Manager ikut autosave IndexedDB dan cloud draft.
+
+## Stage 13 — Multi-Video Campaign Production
+
+Stage 13 membuat briefing campaign dapat dipakai untuk produksi skala lebih besar, bukan hanya satu source video. Fitur utamanya:
+
+- **Multi-video campaign batch** hingga beberapa source dalam satu workspace.
+- Source video kecil dapat disimpan ke IndexedDB bersama project (dibatasi per-file dan total agar storage browser tidak dipaksa berlebihan).
+- Transcript source disimpan di cache selama sesi agar tagging target speaker lalu ranking ulang tidak menghabiskan quota transkripsi lagi.
+- **Target speaker per source**: Speaker 1 di video A tidak dianggap otomatis sama dengan Speaker 1 di video B.
+- **Beberapa kandidat per narasi** dengan target 1–4 kandidat/narasi; hasil akhir dipilih lintas source berdasarkan skor terbaik.
+- Status otomatis setiap kandidat: **Siap Submit**, **Perlu Revisi**, atau **Gagal Brief**.
+- Status mempertimbangkan compliance brief, render terbaru, Publish Pack, logo/CTA/hashtag, serta manual review.
+- Manual review campaign dapat dicentang setelah benar-benar diverifikasi (misalnya link bio, bukan screenshot/repost, izin footage).
+- **Campaign Template** tersimpan lokal di browser sehingga briefing seperti Fortis Circle dapat dipakai ulang tanpa paste ulang.
+
+### Alur batch yang direkomendasikan
+
+1. Analisis briefing.
+2. Tambahkan semua source video di Campaign Workspace.
+3. Klik **Analisis Semua Video**.
+4. Jika briefing mewajibkan pembicara tertentu, tag target speaker pada setiap source setelah diarization selesai.
+5. Jalankan **Analisis Semua Video** lagi; transcript sesi dipakai ulang sehingga hanya ranking yang diperbarui.
+6. Review kandidat per narasi dan status submit.
+7. Render kandidat yang dipilih, buat Publish Pack, selesaikan manual review, lalu export.
 
 ## Stage 12 — Campaign Workspace
 

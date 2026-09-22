@@ -8,7 +8,8 @@ export type AnalyticsEventName =
   | "transcribe_error"
   | "cloud_sync_success"
   | "cloud_sync_error"
-  | "batch_render_complete";
+  | "batch_render_complete"
+  | "campaign_batch_complete";
 
 export async function trackAnalytics(
   event: AnalyticsEventName,

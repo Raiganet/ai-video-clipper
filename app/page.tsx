@@ -15,6 +15,7 @@ import ExportPanel from "@/components/ExportPanel";
 import BriefingPanel from "@/components/BriefingPanel";
 import BriefCompliancePanel from "@/components/BriefCompliancePanel";
 import CampaignWorkspace from "@/components/CampaignWorkspace";
+import CampaignSubmissionManager from "@/components/CampaignSubmissionManager";
 import ProjectHistory from "@/components/ProjectHistory";
 import AccountPanel from "@/components/AccountPanel";
 import PwaInstallButton from "@/components/PwaInstallButton";
@@ -32,7 +33,8 @@ import { renderVideoClipRemote } from "@/lib/renderWorker";
 import type { SocialTemplate, SocialTemplateId } from "@/lib/socialTemplates";
 import type { ClipSocialMetadata } from "@/lib/clipMetadata";
 import { EMPTY_BRIEFING, buildBriefCandidates, evaluateBriefCompliance, localRankBriefCandidates, normalizeBriefing, transcriptForRange, type BriefingSpec } from "@/lib/briefing";
-import { EMPTY_WORKSPACE, chooseCampaignWorkspaceMoments, normalizeWorkspace, upsertWorkspaceSource, type CampaignWorkspaceDraft } from "@/lib/campaignWorkspace";
+import { EMPTY_WORKSPACE, campaignSourceId, chooseCampaignWorkspaceMoments, deriveClipSubmissionStatus, normalizeWorkspace, removeWorkspaceSource, sameNarrative, updateWorkspaceSource, upsertWorkspaceSource, type CampaignSubmissionStatus, type CampaignWorkspaceDraft } from "@/lib/campaignWorkspace";
+import { EMPTY_SUBMISSION, normalizeCampaignSubmission, recordRenderRevision, type CampaignSubmissionDraft } from "@/lib/submissionManager";
 import { rankBriefCandidates } from "@/lib/briefingClient";
 
 interface Clip {
@@ -48,6 +50,11 @@ interface Clip {
   renderSignature: string | null;
   briefingNarrative?: string;
   briefingFlags?: string[];
+  sourceId?: string;
+  sourceName?: string;
+  sourceDuration?: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
 }
 
 function fmt(t: number) {
@@ -94,7 +101,7 @@ function renderSignature(
 ) {
   const effectiveCaption = captionStyle === "none" || cues.length === 0 ? "none" : captionStyle;
   return [
-    "v12",
+    "v14",
     settings.crop,
     settings.smartCrop,
     settings.renderMode,
@@ -114,6 +121,9 @@ export default function Home() {
   const [videoMeta, setVideoMeta] = useState<VideoMetadata | null>(null);
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle>("karaoke");
   const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
+  const [clipTranscriptSegments, setClipTranscriptSegments] = useState<Record<number, TranscriptSegment[]>>({});
+  const [campaignSourceFiles, setCampaignSourceFiles] = useState<Record<string, File>>({});
+  const [campaignSourceTranscripts, setCampaignSourceTranscripts] = useState<Record<string, TranscriptSegment[]>>({});
   const [captionOverrides, setCaptionOverrides] = useState<Record<number, CaptionCue[]>>({});
   const [faceFocuses, setFaceFocuses] = useState<Record<number, CropFocus>>({});
   const [faceTracks, setFaceTracks] = useState<Record<number, CropTrack>>({});
@@ -146,6 +156,7 @@ export default function Home() {
   const [clipMetadata, setClipMetadata] = useState<Record<number, ClipSocialMetadata>>({});
   const [briefing, setBriefing] = useState<BriefingSpec>({ ...EMPTY_BRIEFING });
   const [campaignWorkspace, setCampaignWorkspace] = useState<CampaignWorkspaceDraft>({ ...EMPTY_WORKSPACE });
+  const [campaignSubmission, setCampaignSubmission] = useState<CampaignSubmissionDraft>({ ...EMPTY_SUBMISSION });
   const renderControllersRef = useRef<Map<number, AbortController>>(new Map());
   const batchCancelRef = useRef(false);
   const clipsRef = useRef<Clip[]>([]);
@@ -155,15 +166,35 @@ export default function Home() {
     [clips, selectedId]
   );
 
+  const getClipSegments = (clip: Clip | null) => {
+    if (!clip) return transcriptSegments;
+    return clipTranscriptSegments[clip.id] || transcriptSegments;
+  };
+
+  const getClipSourceFile = (clip: Clip | null) => {
+    if (!clip) return uploadedVideo;
+    if (clip.sourceId && campaignSourceFiles[clip.sourceId]) return campaignSourceFiles[clip.sourceId];
+    if (uploadedVideo && (!clip.sourceId || campaignSourceId(uploadedVideo) === clip.sourceId)) return uploadedVideo;
+    return null;
+  };
+
+  const getClipBriefing = (clip: Clip | null) => {
+    if (!clip?.sourceId || !briefing.requireTargetSpeaker) return briefing;
+    const source = campaignWorkspace.sourceVideos.find((item) => item.id === clip.sourceId);
+    if (!source) return briefing;
+    return normalizeBriefing({ ...briefing, targetSpeakerIndex: source.targetSpeakerIndex ?? null });
+  };
+
   const outputInfo = useMemo(() => {
+    if (selectedClip?.sourceWidth && selectedClip?.sourceHeight) return getOutputSize(settings.crop, selectedClip.sourceWidth, selectedClip.sourceHeight);
     if (!videoMeta) return null;
     return getOutputSize(settings.crop, videoMeta.width, videoMeta.height);
-  }, [settings.crop, videoMeta]);
+  }, [settings.crop, videoMeta, selectedClip?.sourceWidth, selectedClip?.sourceHeight]);
 
-  const speakerCount = useMemo(
-    () => new Set(transcriptSegments.map((segment) => segment.speaker).filter((value): value is number => typeof value === "number")).size,
-    [transcriptSegments]
-  );
+  const speakerCount = useMemo(() => {
+    const segments = selectedClip ? (clipTranscriptSegments[selectedClip.id] || transcriptSegments) : transcriptSegments;
+    return new Set(segments.map((segment) => segment.speaker).filter((value): value is number => typeof value === "number")).size;
+  }, [selectedClip, clipTranscriptSegments, transcriptSegments]);
 
   useEffect(() => {
     clipsRef.current = clips;
@@ -197,10 +228,11 @@ export default function Home() {
     };
   }, []);
 
-  const getCuesForClip = (clip: Clip, segments = transcriptSegments) => {
+  const getCuesForClip = (clip: Clip, segments?: TranscriptSegment[]) => {
     const custom = captionOverrides[clip.id];
     if (custom) return custom;
-    return buildCaptionCues(segments, clip.start, clip.duration, captionStyle);
+    const sourceSegments = segments || clipTranscriptSegments[clip.id] || transcriptSegments;
+    return buildCaptionCues(sourceSegments, clip.start, clip.duration, captionStyle);
   };
 
   const getCurrentSignature = (clip: Clip) => (
@@ -215,15 +247,19 @@ export default function Home() {
       return [];
     });
     setCaptionOverrides({});
+    setClipTranscriptSegments({});
     setFaceFocuses({});
     setFaceTracks({});
     setClipMetadata({});
+    setCampaignSubmission((previous) => ({ ...normalizeCampaignSubmission(previous), clips: {}, finalPackageGeneratedAt: null }));
     setSelectedId(null);
   };
 
   const handleUpload = (file: File | null) => {
     if (file && projectId && !uploadedVideo) {
       setUploadedVideo(file);
+      const sourceId = campaignSourceId(file);
+      setCampaignSourceFiles((previous) => ({ ...previous, [sourceId]: file }));
       setCampaignWorkspace((previous) => upsertWorkspaceSource(previous, file));
       setSaveState("idle");
       setCloudState("idle");
@@ -239,6 +275,10 @@ export default function Home() {
     setTranscriptSegments([]);
     setVideoMeta(null);
     setUploadedVideo(file);
+    if (file) {
+      const sourceId = campaignSourceId(file);
+      setCampaignSourceFiles((previous) => ({ ...previous, [sourceId]: file }));
+    }
     setCampaignWorkspace((previous) => file ? upsertWorkspaceSource(previous, file) : previous);
     setCloudState("idle");
     if (file) {
@@ -355,6 +395,7 @@ export default function Home() {
         if (item.blobUrl) URL.revokeObjectURL(item.blobUrl);
         return { ...item, blobUrl: url, processing: false, renderSignature: signature };
       }));
+      setCampaignSubmission((previous) => recordRenderRevision(previous, clip.id, signature));
       void trackAnalytics("render_success", { ratio: settings.crop, caption: effectiveCaptionStyle, smartCrop: settings.smartCrop, durationSec: Math.round(clip.duration * 10) / 10, renderMs: Math.round(performance.now() - renderStartedAt) });
     } catch (error) {
       setClips((previous) => previous.map((item) => item.id === clip.id ? { ...item, processing: false } : item));
@@ -379,12 +420,20 @@ export default function Home() {
       setVideoMeta(metadata);
       const duration = metadata.duration;
       if (!duration || duration <= 0) throw new Error("Durasi video tidak valid");
+      const currentSourceId = campaignSourceId(uploadedVideo);
+      setCampaignSourceFiles((previous) => ({ ...previous, [currentSourceId]: uploadedVideo }));
+      setCampaignWorkspace((previous) => updateWorkspaceSource(upsertWorkspaceSource(previous, uploadedVideo), currentSourceId, { duration, width: metadata.width, height: metadata.height }));
 
       let moments: ViralMoment[];
       let segmentsForRender: TranscriptSegment[] = [];
       const briefingMomentMeta = new Map<string, { narrative: string; flags: string[] }>();
-      const effectiveBriefing = briefing.enabled && campaignWorkspace.enabled && campaignWorkspace.focusedNarrative
-        ? normalizeBriefing({ ...briefing, requiredNarratives: [campaignWorkspace.focusedNarrative] })
+      const currentSourceWorkspace = campaignWorkspace.sourceVideos.find((item) => item.id === currentSourceId);
+      const effectiveBriefing = briefing.enabled
+        ? normalizeBriefing({
+            ...briefing,
+            requiredNarratives: campaignWorkspace.enabled && campaignWorkspace.focusedNarrative ? [campaignWorkspace.focusedNarrative] : briefing.requiredNarratives,
+            targetSpeakerIndex: briefing.requireTargetSpeaker ? (currentSourceWorkspace?.targetSpeakerIndex ?? briefing.targetSpeakerIndex) : briefing.targetSpeakerIndex,
+          })
         : briefing;
       if (briefing.enabled && !briefing.analyzedAt) throw new Error("Briefing aktif tetapi belum dianalisis. Klik Analisis Briefing terlebih dahulu.");
 
@@ -416,6 +465,7 @@ export default function Home() {
           }
           segmentsForRender = workingSegments;
           setTranscriptSegments(workingSegments);
+          setCampaignSourceTranscripts((previous) => ({ ...previous, [currentSourceId]: workingSegments }));
           setStatus(briefing.enabled ? "Mencocokkan transcript dengan briefing campaign..." : "Menganalisis timestamp dan memilih momen terbaik...");
           setProgress(80);
           if (effectiveBriefing.enabled) {
@@ -479,10 +529,20 @@ export default function Home() {
         renderSignature: null,
         briefingNarrative: briefingMomentMeta.get(moment.start.toFixed(2))?.narrative,
         briefingFlags: briefingMomentMeta.get(moment.start.toFixed(2))?.flags,
+        sourceId: currentSourceId,
+        sourceName: uploadedVideo.name,
+        sourceDuration: metadata.duration,
+        sourceWidth: metadata.width,
+        sourceHeight: metadata.height,
       }));
 
       if (generated.length === 0) throw new Error("Tidak ada klip yang dapat dibuat");
 
+      const transcriptMap: Record<number, TranscriptSegment[]> = {};
+      for (const clip of generated) {
+        transcriptMap[clip.id] = segmentsForRender.filter((segment) => segment.end > Math.max(0, clip.start - 10) && segment.start < clip.start + clip.duration + 10);
+      }
+      setClipTranscriptSegments(transcriptMap);
       setClips(generated);
       setCampaignWorkspace((previous) => ({ ...normalizeWorkspace(previous), enabled: previous.enabled || effectiveBriefing.enabled, lastGeneratedAt: Date.now() }));
       setSelectedId(generated[0].id);
@@ -513,13 +573,20 @@ export default function Home() {
 
   const handleRenderClip = async (clip: Clip) => {
     setSelectedId(clip.id);
-    if (!uploadedVideo || clip.processing || busy) return;
-
-    let metadata = videoMeta;
-    if (!metadata) {
-      metadata = await getVideoMetadata(uploadedVideo);
-      setVideoMeta(metadata);
+    const sourceFile = getClipSourceFile(clip);
+    if (!sourceFile || clip.processing || busy) {
+      if (!sourceFile) setWarning(`File source untuk ${clip.sourceName || clip.title} belum tersedia di sesi ini. Pilih ulang source video di Campaign Workspace.`);
+      return;
     }
+
+    let metadata: VideoMetadata;
+    if (clip.sourceWidth && clip.sourceHeight && clip.sourceDuration) {
+      metadata = { width: clip.sourceWidth, height: clip.sourceHeight, duration: clip.sourceDuration };
+    } else {
+      metadata = await getVideoMetadata(sourceFile);
+      if (!clip.sourceId || uploadedVideo === sourceFile) setVideoMeta(metadata);
+    }
+    const clipSegments = getClipSegments(clip);
 
     setBusy(true);
     setProgress(0);
@@ -529,7 +596,7 @@ export default function Home() {
     renderControllersRef.current.set(clip.id, controller);
 
     try {
-      await processClip(clip, uploadedVideo, metadata, transcriptSegments, (percent, phase) => {
+      await processClip(clip, sourceFile, metadata, clipSegments, (percent, phase) => {
         setStatus(phase === "captions" ? "Membuat layer caption..." : "Render video, smart crop, audio, dan caption...");
         setProgress(phase === "captions" ? Math.round(percent * 0.2) : 20 + Math.round(percent * 0.8));
       }, controller.signal);
@@ -549,12 +616,7 @@ export default function Home() {
   };
 
   const handleRenderAll = async () => {
-    if (!uploadedVideo || busy || clips.length === 0) return;
-    let metadata = videoMeta;
-    if (!metadata) {
-      metadata = await getVideoMetadata(uploadedVideo);
-      setVideoMeta(metadata);
-    }
+    if (busy || clips.length === 0) return;
     const queue = clips.filter((clip) => !clip.blobUrl || clip.renderSignature !== getCurrentSignature(clip));
     if (queue.length === 0) {
       setStatus("Semua klip sudah menggunakan setting terbaru.");
@@ -575,9 +637,14 @@ export default function Home() {
         setSelectedId(clip.id);
         setStatus(`Batch render ${index + 1}/${queue.length}: ${clip.title}`);
         try {
+          const sourceFile = getClipSourceFile(clip);
+          if (!sourceFile) throw new Error(`Source ${clip.sourceName || clip.id} belum tersedia.`);
+          const metadata = clip.sourceWidth && clip.sourceHeight && clip.sourceDuration
+            ? { width: clip.sourceWidth, height: clip.sourceHeight, duration: clip.sourceDuration }
+            : await getVideoMetadata(sourceFile);
           const controller = new AbortController();
           renderControllersRef.current.set(clip.id, controller);
-          await processClip(clip, uploadedVideo, metadata, transcriptSegments, (percent, phase) => {
+          await processClip(clip, sourceFile, metadata, getClipSegments(clip), (percent, phase) => {
             const phaseProgress = phase === "captions" ? percent * 0.18 : 18 + percent * 0.82;
             setProgress(Math.round(((index + phaseProgress / 100) / queue.length) * 100));
           }, renderControllersRef.current.get(clip.id)?.signal);
@@ -620,9 +687,10 @@ export default function Home() {
   };
 
   const handleTrimChange = (start: number, end: number) => {
-    if (!selectedClip || !videoMeta) return;
-    const safeStart = Math.max(0, Math.min(start, videoMeta.duration - 1));
-    const safeEnd = Math.max(safeStart + 1, Math.min(end, videoMeta.duration));
+    if (!selectedClip) return;
+    const sourceDuration = selectedClip.sourceDuration || videoMeta?.duration || selectedClip.start + selectedClip.duration;
+    const safeStart = Math.max(0, Math.min(start, sourceDuration - 1));
+    const safeEnd = Math.max(safeStart + 1, Math.min(end, sourceDuration));
     setClips((previous) => previous.map((clip) => clip.id === selectedClip.id
       ? { ...clip, start: safeStart, duration: safeEnd - safeStart }
       : clip));
@@ -742,6 +810,267 @@ export default function Home() {
       : "Campaign Workspace kembali ke mode semua narasi. Klik Cari Preview Klip untuk menyusun coverage campaign lengkap.");
   };
 
+  const handleAddCampaignSources = (files: File[]) => {
+    const accepted = files.filter((file) => (file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(file.name)) && file.size <= 1.5 * 1024 * 1024 * 1024).slice(0, 12);
+    if (accepted.length === 0) {
+      setWarning("Tidak ada file video yang didukung.");
+      return;
+    }
+    setCampaignSourceFiles((previous) => {
+      const next = { ...previous };
+      accepted.forEach((file) => { next[campaignSourceId(file)] = file; });
+      return next;
+    });
+    setCampaignWorkspace((previous) => {
+      let next = normalizeWorkspace(previous);
+      accepted.forEach((file) => { next = upsertWorkspaceSource(next, file); });
+      return { ...next, enabled: true };
+    });
+    if (!uploadedVideo) {
+      const first = accepted[0];
+      setUploadedVideo(first);
+      setVideoMeta(null);
+      if (!projectId) {
+        const now = Date.now();
+        setProjectId(crypto.randomUUID());
+        setProjectCreatedAt(now);
+        setProjectName(briefing.campaignName || first.name.replace(/\.[^.]+$/, "") || "Campaign Project");
+      }
+    }
+    setActiveTab("upload");
+    setStatus(`${accepted.length} video ditambahkan ke Campaign Workspace.`);
+  };
+
+  const handleRemoveCampaignSource = (sourceId: string) => {
+    const wasPrimary = Boolean(uploadedVideo && campaignSourceId(uploadedVideo) === sourceId);
+    const remainingFileEntries = Object.entries(campaignSourceFiles).filter(([id]) => id !== sourceId);
+    setCampaignSourceFiles((previous) => {
+      const next = { ...previous };
+      delete next[sourceId];
+      return next;
+    });
+    if (wasPrimary) {
+      const nextPrimary = remainingFileEntries[0]?.[1] || null;
+      setUploadedVideo(nextPrimary);
+      setVideoMeta(null);
+    }
+    setCampaignWorkspace((previous) => removeWorkspaceSource(previous, sourceId));
+    setCampaignSourceTranscripts((previous) => {
+      const next = { ...previous };
+      delete next[sourceId];
+      return next;
+    });
+    const removedClipIds = clips.filter((clip) => clip.sourceId === sourceId).map((clip) => clip.id);
+    if (removedClipIds.length) {
+      setClips((previous) => previous.filter((clip) => clip.sourceId !== sourceId));
+      setClipTranscriptSegments((previous) => {
+        const next = { ...previous };
+        removedClipIds.forEach((id) => delete next[id]);
+        return next;
+      });
+      setCaptionOverrides((previous) => {
+        const next = { ...previous };
+        removedClipIds.forEach((id) => delete next[id]);
+        return next;
+      });
+      setFaceFocuses((previous) => {
+        const next = { ...previous };
+        removedClipIds.forEach((id) => delete next[id]);
+        return next;
+      });
+      setFaceTracks((previous) => {
+        const next = { ...previous };
+        removedClipIds.forEach((id) => delete next[id]);
+        return next;
+      });
+      setClipMetadata((previous) => {
+        const next = { ...previous };
+        removedClipIds.forEach((id) => delete next[id]);
+        return next;
+      });
+      setCampaignSubmission((previous) => {
+        const normalized = normalizeCampaignSubmission(previous);
+        const nextClips = { ...normalized.clips };
+        removedClipIds.forEach((id) => delete nextClips[id]);
+        return { ...normalized, clips: nextClips, finalPackageGeneratedAt: null };
+      });
+      setSelectedId((current) => current && removedClipIds.includes(current) ? null : current);
+    }
+  };
+
+  const handleSetSourceSpeaker = (sourceId: string, speakerIndex: number | null) => {
+    setCampaignWorkspace((previous) => updateWorkspaceSource(previous, sourceId, { targetSpeakerIndex: speakerIndex }));
+    setStatus(speakerIndex === null
+      ? "Tag target speaker dihapus. Kandidat source tersebut perlu direview ulang."
+      : `Target speaker source diset ke Speaker ${speakerIndex + 1}. Jalankan Analisis Semua Video lagi untuk menerapkan dominasi speaker.`);
+  };
+
+  const handleApplyCampaignTemplate = (nextBriefing: BriefingSpec, nextWorkspace: CampaignWorkspaceDraft) => {
+    setBriefing(nextBriefing);
+    setCampaignWorkspace(nextWorkspace);
+    setSettings((current) => ({
+      ...current,
+      aiMode: "transcript",
+      speakerMode: nextBriefing.requireTargetSpeaker ? "diarize" : current.speakerMode,
+      previewCount: Math.max(current.previewCount, Math.min(12, Math.max(3, nextBriefing.requiredNarratives.length * nextWorkspace.candidateTargetPerNarrative))),
+    }));
+    if (nextBriefing.requireLogo) setBranding((current) => ({ ...current, enabled: true }));
+    setStatus(`Template campaign ${nextBriefing.campaignName || "tersimpan"} diterapkan.`);
+  };
+
+  const handleAnalyzeCampaignSources = async () => {
+    if (busy) return;
+    if (!briefing.enabled || !briefing.analyzedAt) {
+      setWarning("Analisis briefing terlebih dahulu sebelum menjalankan multi-video batch.");
+      return;
+    }
+    const workspace = normalizeWorkspace(campaignWorkspace);
+    const available = workspace.sourceVideos
+      .map((source) => ({ source, file: campaignSourceFiles[source.id] || (uploadedVideo && campaignSourceId(uploadedVideo) === source.id ? uploadedVideo : null) }))
+      .filter((item): item is { source: typeof workspace.sourceVideos[number]; file: File } => Boolean(item.file));
+    if (available.length === 0) {
+      setWarning("Tidak ada source video yang tersedia di sesi ini. Klik Tambah video dan pilih file source terlebih dahulu.");
+      return;
+    }
+
+    setBusy(true);
+    setWarning("");
+    setProgress(0);
+    resetClips();
+    const generated: Clip[] = [];
+    const transcriptMap: Record<number, TranscriptSegment[]> = {};
+    let nextId = 1;
+    let failedSources = 0;
+
+    try {
+      for (let sourceIndex = 0; sourceIndex < available.length; sourceIndex += 1) {
+        const { source, file } = available[sourceIndex];
+        setCampaignWorkspace((previous) => updateWorkspaceSource(previous, source.id, { analysisStatus: "analyzing", error: "", candidateCount: 0 }));
+        setStatus(`Campaign batch ${sourceIndex + 1}/${available.length}: ${source.name}`);
+        try {
+          const metadata = await getVideoMetadata(file);
+          const sourceBrief = normalizeBriefing({
+            ...briefing,
+            requiredNarratives: workspace.focusedNarrative ? [workspace.focusedNarrative] : briefing.requiredNarratives,
+            targetSpeakerIndex: briefing.requireTargetSpeaker ? (source.targetSpeakerIndex ?? null) : briefing.targetSpeakerIndex,
+          });
+          const cachedSegments = campaignSourceTranscripts[source.id];
+          let sourceSegments: TranscriptSegment[];
+          let sourceSpeakerCount = 0;
+          if (cachedSegments?.length) {
+            sourceSegments = cachedSegments;
+            sourceSpeakerCount = new Set(cachedSegments.map((segment) => segment.speaker).filter((value): value is number => typeof value === "number")).size;
+            setStatus(`Campaign batch ${sourceIndex + 1}/${available.length}: memakai transcript cache ${source.name}`);
+          } else {
+            const transcript = await transcribeVideo(file, metadata.duration, ({ phase, percent }) => {
+              const local = phase === "extract" ? percent * 0.35 : 35 + percent * 0.45;
+              setProgress(Math.round(((sourceIndex + local / 100) / available.length) * 100));
+            }, { speakerDiarization: settings.speakerMode === "diarize" || briefing.requireTargetSpeaker, language: "id" });
+            sourceSegments = transcript.segments;
+            sourceSpeakerCount = transcript.speakerCount;
+            setCampaignSourceTranscripts((previous) => ({ ...previous, [source.id]: sourceSegments }));
+          }
+
+          const candidates = buildBriefCandidates(
+            sourceSegments,
+            metadata.duration,
+            sourceBrief,
+            Math.max(24, Math.max(1, sourceBrief.requiredNarratives.length) * workspace.candidateTargetPerNarrative * 5)
+          );
+          let rankings;
+          try {
+            rankings = await rankBriefCandidates(sourceBrief, candidates);
+          } catch (error) {
+            console.warn("Batch briefing AI rank failed; using local ranking", error);
+            rankings = localRankBriefCandidates(candidates, sourceBrief);
+          }
+          const maxForSource = Math.max(
+            workspace.candidateTargetPerNarrative,
+            Math.max(1, sourceBrief.requiredNarratives.length) * workspace.candidateTargetPerNarrative
+          );
+          const selected = chooseCampaignWorkspaceMoments({
+            brief: sourceBrief,
+            candidates,
+            rankings,
+            maxClips: Math.min(20, maxForSource),
+            focusedNarrative: workspace.focusedNarrative,
+            maxPerNarrative: workspace.candidateTargetPerNarrative,
+          });
+
+          for (const item of selected) {
+            const clipId = nextId++;
+            const sourceSpeakerMissing = briefing.requireTargetSpeaker && source.targetSpeakerIndex == null;
+            generated.push({
+              id: clipId,
+              title: item.title,
+              start: item.start,
+              duration: Math.max(0.1, item.end - item.start),
+              blobUrl: null,
+              processing: false,
+              isAiDetected: true,
+              score: item.score,
+              reason: item.reason,
+              renderSignature: null,
+              briefingNarrative: item.narrative,
+              briefingFlags: sourceSpeakerMissing ? [...item.flags, "Target speaker source belum ditag"] : item.flags,
+              sourceId: source.id,
+              sourceName: source.name,
+              sourceDuration: metadata.duration,
+              sourceWidth: metadata.width,
+              sourceHeight: metadata.height,
+            });
+            transcriptMap[clipId] = sourceSegments.filter((segment) => segment.end > Math.max(0, item.start - 10) && segment.start < item.end + 10);
+          }
+
+          setCampaignWorkspace((previous) => updateWorkspaceSource(previous, source.id, {
+            analysisStatus: "done",
+            speakerCount: sourceSpeakerCount,
+            candidateCount: selected.length,
+            duration: metadata.duration,
+            width: metadata.width,
+            height: metadata.height,
+            error: "",
+          }));
+        } catch (error) {
+          failedSources += 1;
+          const message = error instanceof Error ? error.message : String(error);
+          setCampaignWorkspace((previous) => updateWorkspaceSource(previous, source.id, { analysisStatus: "error", error: message.slice(0, 500), candidateCount: 0 }));
+        }
+        setProgress(Math.round(((sourceIndex + 1) / available.length) * 100));
+      }
+
+      if (generated.length === 0) throw new Error("Tidak ada kandidat klip yang lolos briefing dari semua source yang tersedia.");
+      const narrativeTargets = workspace.focusedNarrative ? [workspace.focusedNarrative] : briefing.requiredNarratives;
+      const pruned: Clip[] = [];
+      const usedIds = new Set<number>();
+      for (const narrative of narrativeTargets) {
+        const matches = generated.filter((clip) => clip.briefingNarrative && sameNarrative(clip.briefingNarrative, narrative)).sort((a, b) => b.score - a.score);
+        for (const clip of matches.slice(0, workspace.candidateTargetPerNarrative)) {
+          if (!usedIds.has(clip.id)) { usedIds.add(clip.id); pruned.push(clip); }
+        }
+      }
+      if (pruned.length === 0) {
+        generated.sort((a, b) => b.score - a.score).slice(0, Math.min(20, workspace.candidateTargetPerNarrative * Math.max(1, narrativeTargets.length))).forEach((clip) => { usedIds.add(clip.id); pruned.push(clip); });
+      }
+      const finalTranscriptMap: Record<number, TranscriptSegment[]> = {};
+      pruned.forEach((clip) => { finalTranscriptMap[clip.id] = transcriptMap[clip.id] || []; });
+      setClips(pruned);
+      setClipTranscriptSegments(finalTranscriptMap);
+      setSelectedId(pruned[0].id);
+      setTranscriptSegments(finalTranscriptMap[pruned[0].id] || []);
+      setCampaignWorkspace((previous) => ({ ...normalizeWorkspace(previous), enabled: true, lastGeneratedAt: Date.now() }));
+      setStatus(`Campaign batch selesai: ${pruned.length} kandidat terbaik dari ${available.length - failedSources}/${available.length} source.`);
+      if (failedSources > 0) setWarning(`${failedSources} source gagal dianalisis. Lihat status source di Campaign Workspace dan coba ulang.`);
+      void trackAnalytics("campaign_batch_complete", { sources: available.length, failedSources, clips: pruned.length, narratives: briefing.requiredNarratives.length });
+    } catch (error) {
+      setWarning(error instanceof Error ? error.message : "Campaign batch gagal.");
+      setStatus("");
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => setProgress(0), 1200);
+    }
+  };
+
   const handleDownload = (clip: Clip) => {
     if (!clip.blobUrl) return;
     const ratioName = outputInfo?.ratio || settings.crop;
@@ -758,13 +1087,18 @@ export default function Home() {
     setUploadedVideo(null);
     setVideoMeta(null);
     setTranscriptSegments([]);
+    setClipTranscriptSegments({});
+    setCampaignSourceFiles({});
+    setCampaignSourceTranscripts({});
     setCaptionOverrides({});
+    setClipTranscriptSegments({});
     setFaceFocuses({});
     setFaceTracks({});
     setClipMetadata({});
     setSocialTemplateId(null);
     setBriefing({ ...EMPTY_BRIEFING });
     setCampaignWorkspace({ ...EMPTY_WORKSPACE });
+    setCampaignSubmission({ ...EMPTY_SUBMISSION });
     setWarning("");
     setStatus("");
     setProgress(0);
@@ -786,10 +1120,15 @@ export default function Home() {
       setProjectId(draft.id);
       setProjectName(draft.name);
       setProjectCreatedAt(draft.createdAt);
-      setUploadedVideo(loaded.sourceFile);
+      const restoredCampaignFiles = { ...(loaded.campaignSourceFiles || {}) };
+      if (loaded.sourceFile) restoredCampaignFiles[campaignSourceId(loaded.sourceFile)] = loaded.sourceFile;
+      const fallbackSource = draft.campaignWorkspace?.sourceVideos?.map((item) => restoredCampaignFiles[item.id]).find(Boolean) || null;
+      setUploadedVideo(loaded.sourceFile || fallbackSource);
+      setCampaignSourceFiles(restoredCampaignFiles);
       setVideoMeta(draft.videoMeta);
       setCaptionStyle(draft.captionStyle);
       setTranscriptSegments(draft.transcriptSegments || []);
+      setClipTranscriptSegments(draft.clipTranscriptSegments || {});
       setCaptionOverrides(draft.captionOverrides || {});
       setFaceFocuses(draft.faceFocuses || {});
       setFaceTracks(draft.faceTracks || {});
@@ -798,6 +1137,7 @@ export default function Home() {
       setClipMetadata(draft.clipMetadata || {});
       setBriefing(normalizeBriefing(draft.briefing || EMPTY_BRIEFING));
       setCampaignWorkspace(normalizeWorkspace(draft.campaignWorkspace || EMPTY_WORKSPACE));
+      setCampaignSubmission(normalizeCampaignSubmission(draft.campaignSubmission || EMPTY_SUBMISSION));
       setSettings({
         ...draft.settings,
         smartCrop: draft.settings?.smartCrop || "dynamic",
@@ -807,8 +1147,8 @@ export default function Home() {
       setClips((draft.clips || []).map((clip) => ({ ...clip, blobUrl: null, processing: false, renderSignature: null })));
       setSelectedId(draft.selectedId);
       setSaveState("saved");
-      if (!loaded.sourceFile) {
-        setWarning("Draft berhasil dibuka, tetapi video sumber tidak disimpan karena ukurannya besar. Pilih ulang file sumber sebelum render.");
+      if (!loaded.sourceFile && Object.keys(restoredCampaignFiles).length === 0) {
+        setWarning("Draft berhasil dibuka, tetapi file source tidak tersimpan karena ukuran/quota browser. Pilih ulang source video di Campaign Workspace sebelum render.");
       } else {
         setStatus("Project dipulihkan. Preview hasil render perlu dibuat ulang.");
       }
@@ -837,6 +1177,7 @@ export default function Home() {
         videoMeta,
         captionStyle,
         transcriptSegments,
+        clipTranscriptSegments,
         captionOverrides,
         faceFocuses,
         faceTracks,
@@ -845,12 +1186,13 @@ export default function Home() {
         clipMetadata,
         briefing,
         campaignWorkspace,
+        campaignSubmission,
         settings,
-        clips: clips.map((clip) => ({ id: clip.id, title: clip.title, start: clip.start, duration: clip.duration, isAiDetected: clip.isAiDetected, score: clip.score, reason: clip.reason, briefingNarrative: clip.briefingNarrative, briefingFlags: clip.briefingFlags })),
+        clips: clips.map((clip) => ({ id: clip.id, title: clip.title, start: clip.start, duration: clip.duration, isAiDetected: clip.isAiDetected, score: clip.score, reason: clip.reason, briefingNarrative: clip.briefingNarrative, briefingFlags: clip.briefingFlags, sourceId: clip.sourceId, sourceName: clip.sourceName, sourceDuration: clip.sourceDuration, sourceWidth: clip.sourceWidth, sourceHeight: clip.sourceHeight })),
         selectedId,
       };
       setSaveState("saving");
-      void saveProject(draft, uploadedVideo).then(async () => {
+      void saveProject(draft, uploadedVideo, campaignSourceFiles).then(async () => {
         setSaveState("saved");
         notifyProjectsChanged();
         if (authUser?.emailVerified) {
@@ -873,23 +1215,64 @@ export default function Home() {
       });
     }, 1500);
     return () => window.clearTimeout(timer);
-  }, [projectId, projectName, projectCreatedAt, uploadedVideo, videoMeta, captionStyle, transcriptSegments, captionOverrides, faceFocuses, faceTracks, branding, socialTemplateId, clipMetadata, briefing, campaignWorkspace, settings, clips, selectedId, authUser?.uid, authUser?.emailVerified]);
+  }, [projectId, projectName, projectCreatedAt, uploadedVideo, videoMeta, captionStyle, transcriptSegments, clipTranscriptSegments, campaignSourceFiles, captionOverrides, faceFocuses, faceTracks, branding, socialTemplateId, clipMetadata, briefing, campaignWorkspace, campaignSubmission, settings, clips, selectedId, authUser?.uid, authUser?.emailVerified]);
 
   const canProcess = activeTab === "upload" && Boolean(uploadedVideo) && !busy;
   const selectedIsStale = Boolean(selectedClip?.blobUrl && selectedClip.renderSignature !== getCurrentSignature(selectedClip));
   const selectedIsFresh = Boolean(selectedClip?.blobUrl && !selectedIsStale);
   const selectedFace = selectedClip ? faceFocuses[selectedClip.id] : undefined;
   const selectedTrack = selectedClip ? faceTracks[selectedClip.id] : undefined;
+  const selectedSourceFile = getClipSourceFile(selectedClip);
+  const selectedSegments = getClipSegments(selectedClip);
+  const selectedBriefing = getClipBriefing(selectedClip);
   const freshClips = clips.filter((clip) => Boolean(clip.blobUrl && clip.renderSignature === getCurrentSignature(clip)));
   const selectedCompliance = selectedClip && briefing.enabled ? evaluateBriefCompliance({
-    brief: briefing,
+    brief: selectedBriefing,
     start: selectedClip.start,
     duration: selectedClip.duration,
-    transcript: transcriptForRange(transcriptSegments, selectedClip.start, selectedClip.duration),
-    segments: transcriptSegments,
+    transcript: transcriptForRange(selectedSegments, selectedClip.start, selectedClip.duration),
+    segments: selectedSegments,
     branding,
     hashtags: clipMetadata[selectedClip.id]?.hashtags,
   }) : [];
+  const clipSubmissionStatuses: Record<number, { status: CampaignSubmissionStatus; reasons: string[] }> = {};
+  for (const clip of clips) {
+    const segments = getClipSegments(clip);
+    const clipBrief = getClipBriefing(clip);
+    const compliance = briefing.enabled ? evaluateBriefCompliance({
+      brief: clipBrief,
+      start: clip.start,
+      duration: clip.duration,
+      transcript: transcriptForRange(segments, clip.start, clip.duration),
+      segments,
+      branding,
+      hashtags: clipMetadata[clip.id]?.hashtags,
+    }) : [];
+    clipSubmissionStatuses[clip.id] = deriveClipSubmissionStatus({
+      compliance,
+      flags: clip.briefingFlags,
+      renderReady: Boolean(clip.blobUrl && clip.renderSignature === getCurrentSignature(clip)),
+      hasPublishPack: Boolean(clipMetadata[clip.id]),
+      brief: clipBrief,
+      workspace: campaignWorkspace,
+    });
+  }
+  const submissionManagerClips = clips.map((clip) => {
+    const renderReady = Boolean(clip.blobUrl && clip.renderSignature === getCurrentSignature(clip));
+    const briefState = clipSubmissionStatuses[clip.id] || { status: "revise" as CampaignSubmissionStatus, reasons: ["Belum dievaluasi"] };
+    return {
+      id: clip.id,
+      title: clip.title,
+      sourceName: clip.sourceName,
+      narrative: clip.briefingNarrative,
+      briefStatus: briefState.status,
+      briefReasons: briefState.reasons,
+      renderReady,
+      blobUrl: renderReady ? clip.blobUrl : null,
+      cues: getCuesForClip(clip),
+      metadata: clipMetadata[clip.id],
+    };
+  });
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -899,7 +1282,7 @@ export default function Home() {
             <Sparkles className="w-5 h-5 text-white" />
           </div>
           <span className="font-bold text-xl hidden sm:inline">AI Clipper</span>
-          <span className="bg-emerald-500/15 text-emerald-400 text-xs px-2 py-1 rounded-full">STAGE 11</span>
+          <span className="bg-emerald-500/15 text-emerald-400 text-xs px-2 py-1 rounded-full">STAGE 14</span>
           <div className="ml-auto flex items-center gap-2">
             <PwaInstallButton />
             <a href="/pricing" className="px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-sm flex items-center gap-2"><CreditCard className="w-4 h-4" /><span className="hidden sm:inline">Harga</span></a>
@@ -937,13 +1320,21 @@ export default function Home() {
         <CampaignWorkspace
           brief={briefing}
           workspace={campaignWorkspace}
-          clips={clips}
+          clips={clips.map((clip) => ({ ...clip, submissionStatus: clipSubmissionStatuses[clip.id]?.status }))}
           branding={branding}
           clipMetadata={clipMetadata}
           disabled={busy}
+          batchStatus={status}
+          batchProgress={progress}
+          loadedSourceIds={Object.keys(campaignSourceFiles)}
           onChange={setCampaignWorkspace}
           onFocusNarrative={handleFocusNarrative}
           onSelectClip={setSelectedId}
+          onAddSourceFiles={handleAddCampaignSources}
+          onRemoveSource={handleRemoveCampaignSource}
+          onAnalyzeSources={() => void handleAnalyzeCampaignSources()}
+          onSetSourceSpeaker={handleSetSourceSpeaker}
+          onApplyTemplate={handleApplyCampaignTemplate}
         />
 
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 mb-8">
@@ -1027,7 +1418,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                <button type="button" disabled={busy || !uploadedVideo} onClick={() => void handleRenderAll()} className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-800 disabled:text-zinc-600 px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
+                <button type="button" disabled={busy || clips.length === 0} onClick={() => void handleRenderAll()} className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-800 disabled:text-zinc-600 px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
                   {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} Render Semua
                 </button>
                 <button type="button" disabled={busy || freshClips.length === 0} onClick={handleDownloadAll} className="bg-zinc-800 hover:bg-zinc-700 disabled:text-zinc-600 px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
@@ -1059,9 +1450,17 @@ export default function Home() {
                   >
                     <div className="font-semibold text-sm mb-1 line-clamp-2">{clip.title}</div>
                     <div className="text-xs text-zinc-400">{fmt(clip.start)} – {fmt(clip.start + clip.duration)} • {clip.duration.toFixed(1)} dtk</div>
+                    {clip.sourceName && <div className="text-[10px] text-sky-300 mt-1 truncate">Source: {clip.sourceName}</div>}
                     {clip.reason && <div className="text-[11px] text-zinc-500 mt-2 line-clamp-2">{clip.reason}</div>}
                     {clip.briefingNarrative && <div className="text-[10px] text-violet-300 mt-2 line-clamp-2">Brief: {clip.briefingNarrative}</div>}
                     {clip.briefingFlags?.length ? <div className="text-[10px] text-amber-300 mt-1 line-clamp-2">⚠ {clip.briefingFlags.join(" • ")}</div> : null}
+                    {briefing.enabled && (() => {
+                      const submission = clipSubmissionStatuses[clip.id];
+                      if (!submission) return null;
+                      const cls = submission.status === "ready" ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20" : submission.status === "failed" ? "bg-red-500/10 text-red-300 border-red-500/20" : "bg-amber-500/10 text-amber-300 border-amber-500/20";
+                      const label = submission.status === "ready" ? "Siap Submit" : submission.status === "failed" ? "Gagal Brief" : "Perlu Revisi";
+                      return <div className={`mt-2 inline-flex px-2 py-1 rounded-full border text-[10px] ${cls}`}>{label}</div>;
+                    })()}
                     <div className="text-xs mt-3 flex items-center gap-2">
                       {clip.processing ? (
                         <span className="text-emerald-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Render...</span>
@@ -1086,7 +1485,13 @@ export default function Home() {
                 <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                   <div>
                     <div className="font-semibold">{selectedClip.title}</div>
-                    <div className="text-xs text-zinc-500 mt-1">Edit draft terlebih dahulu, kemudian render hanya saat diperlukan.</div>
+                    <div className="text-xs text-zinc-500 mt-1">{selectedClip.sourceName ? `Source: ${selectedClip.sourceName} • ` : ""}Edit draft terlebih dahulu, kemudian render hanya saat diperlukan.</div>
+                    {briefing.enabled && clipSubmissionStatuses[selectedClip.id] && <div className="mt-2 flex flex-wrap gap-2 items-center">
+                      <span className={`text-[10px] px-2 py-1 rounded-full border ${clipSubmissionStatuses[selectedClip.id].status === "ready" ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20" : clipSubmissionStatuses[selectedClip.id].status === "failed" ? "bg-red-500/10 text-red-300 border-red-500/20" : "bg-amber-500/10 text-amber-300 border-amber-500/20"}`}>
+                        {clipSubmissionStatuses[selectedClip.id].status === "ready" ? "Siap Submit" : clipSubmissionStatuses[selectedClip.id].status === "failed" ? "Gagal Brief" : "Perlu Revisi"}
+                      </span>
+                      {clipSubmissionStatuses[selectedClip.id].reasons.slice(0, 2).map((reason) => <span key={reason} className="text-[10px] text-zinc-500">{reason}</span>)}
+                    </div>}
                   </div>
                   {settings.smartCrop === "dynamic" && selectedTrack ? (
                     <span className={`text-xs px-3 py-1.5 rounded-full border ${selectedTrack.mode === "face" ? "text-emerald-300 border-emerald-500/20 bg-emerald-500/10" : "text-zinc-400 border-zinc-700 bg-zinc-800"}`}>
@@ -1117,11 +1522,11 @@ export default function Home() {
                 <ClipEditor
                   clipStart={selectedClip.start}
                   clipDuration={selectedClip.duration}
-                  videoDuration={videoMeta?.duration || selectedClip.start + selectedClip.duration}
+                  videoDuration={selectedClip.sourceDuration || videoMeta?.duration || selectedClip.start + selectedClip.duration}
                   captionStyle={captionStyle}
                   cues={selectedCues}
-                  sourceFile={uploadedVideo}
-                  transcriptSegments={transcriptSegments}
+                  sourceFile={selectedSourceFile}
+                  transcriptSegments={selectedSegments}
                   disabled={busy}
                   onTrimChange={handleTrimChange}
                   onCueTextChange={handleCueTextChange}
@@ -1139,7 +1544,7 @@ export default function Home() {
                   vibe={settings.vibe}
                   durationSec={selectedClip.duration}
                   value={clipMetadata[selectedClip.id]}
-                  briefing={briefing}
+                  briefing={selectedBriefing}
                   disabled={busy}
                   onChange={(value) => setClipMetadata((previous) => ({ ...previous, [selectedClip.id]: value }))}
                 />
@@ -1159,6 +1564,19 @@ export default function Home() {
               </div>
             )}
           </div>
+        )}
+
+        {clips.length > 0 && (
+          <CampaignSubmissionManager
+            projectName={projectName || briefing.campaignName || "Campaign"}
+            clips={submissionManagerClips}
+            value={campaignSubmission}
+            ratio={outputInfo?.ratio || settings.crop}
+            captionStyle={captionStyle}
+            disabled={busy}
+            onChange={setCampaignSubmission}
+            onSelectClip={setSelectedId}
+          />
         )}
 
         <SocialTemplateSelector selected={socialTemplateId} disabled={busy} onApply={handleApplyTemplate} />

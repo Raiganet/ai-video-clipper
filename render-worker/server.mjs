@@ -98,7 +98,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", "http://localhost");
   if (req.method === "GET" && url.pathname === "/health") return json(res, 200, { ok: true, activeRenders, queued: queue.length, jobs: jobs.size, maxConcurrent: MAX_CONCURRENT, maxRetries: MAX_RETRIES, ttlMinutes: Math.round(TTL_MS / 60_000) });
 
-  // Stage 11 local fallback API: source session + render job ID.
+  // Stage 14 local fallback API: source session + render job ID.
   let match = url.pathname.match(/^\/v2\/(files|jobs)\/([^/]+)$/);
   if (match) {
     const kind = match[1], sourceId = safeId(match[2]); if (!sourceId) return json(res, 400, { error: "Invalid source id" }); if (!verifyToken(req, sourceId)) return json(res, 401, { error: "Unauthorized" });
@@ -146,4 +146,4 @@ function cleanup() {
   for (const name of readdirSync(TMP)) { const p = join(TMP, name); try { if (statSync(p).mtimeMs < cutoff) unlinkSync(p); } catch {} }
 }
 setInterval(cleanup, Math.min(30 * 60_000, Math.max(5 * 60_000, Math.floor(TTL_MS / 4)))).unref();
-server.listen(PORT, () => console.log(`AI Clipper Stage 11 local render worker listening on :${PORT}`));
+server.listen(PORT, () => console.log(`AI Clipper Stage 14 local render worker listening on :${PORT}`));

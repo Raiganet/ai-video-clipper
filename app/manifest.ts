@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Kastriva AI Video Clipper",
     short_name: "AI Clipper",
-    description: "AI video clipper dengan Briefing-Aware Clipper, campaign compliance, speaker diarization, word-level karaoke, cluster render queue, smart framing, Publish Pack, dan subtitle export.",
+    description: "AI video clipper dengan multi-video Campaign Workspace, Campaign Submission Manager, Briefing-Aware Clipper, campaign compliance, versioning approval, speaker diarization per source, cluster render queue, Publish Pack, dan final submission export.",
     start_url: "/",
     display: "standalone",
     background_color: "#050505",

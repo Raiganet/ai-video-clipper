@@ -101,7 +101,7 @@ export default function SettingsPanel({ settings, onChange }: Props) {
           <div>
             <div className="flex items-center gap-2 mb-3">
               <label className="text-sm text-zinc-400">SMART FRAMING</label>
-              <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full"><ScanFace className="w-3 h-3" /> Stage 11</span>
+              <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full"><ScanFace className="w-3 h-3" /> Stage 14</span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button type="button" onClick={() => updateSetting("smartCrop", "dynamic")} className={`px-3 py-2 rounded-lg text-left transition-all ${settings.smartCrop === "dynamic" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>

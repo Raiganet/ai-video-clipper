@@ -8,6 +8,7 @@ import type { SocialTemplateId } from "@/lib/socialTemplates";
 import type { ClipSocialMetadata } from "@/lib/clipMetadata";
 import type { BriefingSpec } from "@/lib/briefing";
 import type { CampaignWorkspaceDraft } from "@/lib/campaignWorkspace";
+import type { CampaignSubmissionDraft } from "@/lib/submissionManager";
 
 export interface PersistedClip {
   id: number;
@@ -19,6 +20,11 @@ export interface PersistedClip {
   reason?: string;
   briefingNarrative?: string;
   briefingFlags?: string[];
+  sourceId?: string;
+  sourceName?: string;
+  sourceDuration?: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
 }
 
 export interface ProjectDraft {
@@ -34,6 +40,7 @@ export interface ProjectDraft {
   videoMeta: VideoMetadata | null;
   captionStyle: CaptionStyle;
   transcriptSegments: TranscriptSegment[];
+  clipTranscriptSegments?: Record<number, TranscriptSegment[]>;
   captionOverrides: Record<number, CaptionCue[]>;
   faceFocuses: Record<number, CropFocus>;
   faceTracks?: Record<number, CropTrack>;
@@ -42,6 +49,7 @@ export interface ProjectDraft {
   clipMetadata?: Record<number, ClipSocialMetadata>;
   briefing?: BriefingSpec;
   campaignWorkspace?: CampaignWorkspaceDraft;
+  campaignSubmission?: CampaignSubmissionDraft;
   settings: ClipperSettings;
   clips: PersistedClip[];
   selectedId: number | null;
@@ -50,6 +58,7 @@ export interface ProjectDraft {
 export interface LoadedProject {
   draft: ProjectDraft;
   sourceFile: File | null;
+  campaignSourceFiles?: Record<string, File>;
 }
 
 export interface ProjectSummary {

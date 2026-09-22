@@ -44,6 +44,7 @@ async function crc32(blob: Blob) {
 function u16(value: number) { const a = new Uint8Array(2); new DataView(a.buffer).setUint16(0, value, true); return a; }
 function u32(value: number) { const a = new Uint8Array(4); new DataView(a.buffer).setUint32(0, value >>> 0, true); return a; }
 function sanitize(value: string) { return value.replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim().slice(0, 90) || "clip"; }
+function sanitizeZipPath(value: string) { return value.split("/").map((part) => sanitize(part)).filter(Boolean).join("/") || "file"; }
 
 export async function buildStoredZip(files: Array<{ name: string; blob: Blob }>, onProgress?: (percent: number) => void) {
   if (files.length === 0) throw new Error("Tidak ada file untuk ZIP.");
@@ -55,7 +56,7 @@ export async function buildStoredZip(files: Array<{ name: string; blob: Blob }>,
   for (let index = 0; index < files.length; index += 1) {
     const item = files[index];
     if (item.blob.size >= 0xffffffff) throw new Error("Satu file terlalu besar untuk ZIP32 browser.");
-    const nameBytes = encoder.encode(sanitize(item.name));
+    const nameBytes = encoder.encode(sanitizeZipPath(item.name));
     const crc = await crc32(item.blob);
     entries.push({ nameBytes, blob: item.blob, crc, offset });
     offset += 30 + nameBytes.length + item.blob.size;

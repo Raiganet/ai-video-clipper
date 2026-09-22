@@ -132,4 +132,4 @@ const server = http.createServer(async (req, res) => {
 
 async function shutdown() { await queue.close(); await connection.quit(); server.close(() => process.exit(0)); }
 process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
-server.listen(PORT, () => console.log(`AI Clipper Stage 11 cluster API listening on :${PORT}`));
+server.listen(PORT, () => console.log(`AI Clipper Stage 14 cluster API listening on :${PORT}`));

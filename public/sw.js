@@ -1,4 +1,4 @@
-const CACHE_NAME = "kastriva-ai-clipper-stage12-v12";
+const CACHE_NAME = "kastriva-ai-clipper-stage14-v14";
 const APP_SHELL = ["/", "/pricing", "/offline", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png", "/icons/maskable-512.png"];
 
 self.addEventListener("install", (event) => {

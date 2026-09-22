@@ -1,6 +1,6 @@
-# AI Clipper Render Worker — Stage 11
+# AI Clipper Render Worker — Stage 14
 
-Stage 11 mempertahankan **dua mode worker** agar development sederhana tetap jalan dan production bisa scale horizontal.
+Stage 14 mempertahankan **dua mode worker** agar development sederhana tetap jalan dan production bisa scale horizontal.
 
 ## 1. Local fallback — tanpa Redis
 
@@ -110,6 +110,6 @@ Local worker menghentikan child-process FFmpeg secara langsung. Distributed mode
 Local worker memakai TTL file lokal. Distributed mode menggunakan object key terpisah untuk source/output. Untuk production, tambahkan **bucket lifecycle rule** agar prefix `ai-clipper/` terhapus otomatis sesuai retention yang diinginkan. Ini adalah guard kedua di luar cleanup aplikasi.
 
 
-## Stage 11 briefing render
+## Stage 14 briefing render
 
 Render core menerima `ctaOverlay` dari Briefing-Aware Clipper dan membakar CTA hanya pada beberapa detik terakhir video. Branding juga menerima `logoDataUrl` PNG/JPEG/WebP (maks. 300 KB pada payload worker) lalu meng-overlay logo aktual ke output. Bila campaign mewajibkan logo, webapp memblokir render sebelum logo tersedia.
