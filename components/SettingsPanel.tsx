@@ -1,14 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Crop, ScanFace, Smartphone } from "lucide-react";
+import { ChevronDown, ChevronUp, Crop, ScanFace, Server, Smartphone, UsersRound } from "lucide-react";
 
 export interface ClipperSettings {
   previewCount: number;
   vibe: "viral" | "edukasi" | "jualan" | "ringkas";
   crop: "auto" | "9:16" | "1:1" | "16:9" | "original";
-  smartCrop: "face" | "center";
+  smartCrop: "dynamic" | "face" | "center";
   aiMode: "transcript" | "split";
+  speakerMode: "off" | "diarize";
+  renderMode: "auto" | "browser" | "worker";
 }
 
 interface Props {
@@ -99,19 +101,44 @@ export default function SettingsPanel({ settings, onChange }: Props) {
           <div>
             <div className="flex items-center gap-2 mb-3">
               <label className="text-sm text-zinc-400">SMART FRAMING</label>
-              <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full"><ScanFace className="w-3 h-3" /> Stage 3</span>
+              <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full"><ScanFace className="w-3 h-3" /> Stage 11</span>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button type="button" onClick={() => updateSetting("smartCrop", "dynamic")} className={`px-3 py-2 rounded-lg text-left transition-all ${settings.smartCrop === "dynamic" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>
+                <span className="block text-sm font-semibold">Active Subject</span>
+                <span className={`block text-[10px] ${settings.smartCrop === "dynamic" ? "text-emerald-100" : "text-zinc-600"}`}>Dynamic tracking • Beta</span>
+              </button>
               <button type="button" onClick={() => updateSetting("smartCrop", "face")} className={`px-3 py-2 rounded-lg text-left transition-all ${settings.smartCrop === "face" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>
                 <span className="block text-sm font-semibold">Smart Face</span>
-                <span className={`block text-[10px] ${settings.smartCrop === "face" ? "text-emerald-100" : "text-zinc-600"}`}>Sampling wajah lokal</span>
+                <span className={`block text-[10px] ${settings.smartCrop === "face" ? "text-emerald-100" : "text-zinc-600"}`}>Fokus stabil</span>
               </button>
               <button type="button" onClick={() => updateSetting("smartCrop", "center")} className={`px-3 py-2 rounded-lg text-left transition-all ${settings.smartCrop === "center" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}>
                 <span className="block text-sm font-semibold">Center</span>
                 <span className={`block text-[10px] ${settings.smartCrop === "center" ? "text-emerald-100" : "text-zinc-600"}`}>Crop tengah klasik</span>
               </button>
             </div>
-            <p className="text-xs text-zinc-600 mt-2">Smart Face mengambil beberapa sampel frame untuk menjaga subjek tetap berada di area crop. Jika wajah tidak ditemukan, otomatis kembali ke center.</p>
+            <p className="text-xs text-zinc-600 mt-2">Active Subject mengikuti wajah dominan dengan continuity scoring; ini heuristic visual, bukan deteksi lip-sync pembicara. Jika wajah tidak ditemukan, otomatis center.</p>
+          </div>
+
+          <div>
+            <div className="flex items-center gap-2 mb-3"><label className="text-sm text-zinc-400">SPEAKER AI</label><UsersRound className="w-4 h-4 text-zinc-600" /></div>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" disabled={settings.aiMode !== "transcript"} onClick={() => updateSetting("speakerMode", "off")} className={`px-3 py-2 rounded-lg text-left transition-all disabled:opacity-40 ${settings.speakerMode === "off" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}><span className="block text-sm font-semibold">Normal</span><span className="block text-[10px] opacity-70">Groq timestamp</span></button>
+              <button type="button" disabled={settings.aiMode !== "transcript"} onClick={() => updateSetting("speakerMode", "diarize")} className={`px-3 py-2 rounded-lg text-left transition-all disabled:opacity-40 ${settings.speakerMode === "diarize" ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}><span className="block text-sm font-semibold">Diarization</span><span className="block text-[10px] opacity-70">Speaker 1/2/3 • Deepgram</span></button>
+            </div>
+            <p className="text-xs text-zinc-600 mt-2">Diarization mengenali pergantian pembicara dari audio. Untuk video panjang multi-chunk, nomor speaker tidak diasumsikan sama antar chunk.</p>
+          </div>
+
+          <div>
+            <div className="flex items-center gap-2 mb-3"><label className="text-sm text-zinc-400">MESIN RENDER</label><Server className="w-4 h-4 text-zinc-600" /></div>
+            <div className="grid grid-cols-3 gap-2">
+              {([
+                ["auto", "Auto", "Worker utk file besar"],
+                ["browser", "Browser", "FFmpeg WASM lokal"],
+                ["worker", "Server", "External FFmpeg worker"],
+              ] as const).map(([id, label, hint]) => <button key={id} type="button" onClick={() => updateSetting("renderMode", id)} className={`px-3 py-2 rounded-lg text-left transition-all ${settings.renderMode === id ? "bg-emerald-600 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"}`}><span className="block text-sm font-semibold">{label}</span><span className="block text-[10px] opacity-70">{hint}</span></button>)}
+            </div>
+            <p className="text-xs text-zinc-600 mt-2">Auto memakai worker bila tersedia untuk file besar, lalu fallback ke browser jika worker belum dikonfigurasi.</p>
           </div>
 
           <div>

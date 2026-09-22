@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Captions, Plus, RotateCcw, Scissors, Trash2 } from "lucide-react";
 import type { CaptionCue, CaptionStyle } from "@/lib/captions";
+import type { TranscriptSegment } from "@/lib/transcription";
+import WaveformTimeline from "@/components/WaveformTimeline";
 
 interface Props {
   clipStart: number;
@@ -10,6 +12,8 @@ interface Props {
   videoDuration: number;
   captionStyle: CaptionStyle;
   cues: CaptionCue[];
+  sourceFile: File | null;
+  transcriptSegments: TranscriptSegment[];
   disabled?: boolean;
   onTrimChange: (start: number, end: number) => void;
   onCueTextChange: (index: number, text: string) => void;
@@ -31,6 +35,8 @@ export default function ClipEditor({
   videoDuration,
   captionStyle,
   cues,
+  sourceFile,
+  transcriptSegments,
   disabled,
   onTrimChange,
   onCueTextChange,
@@ -66,6 +72,23 @@ export default function ClipEditor({
         </div>
 
         <div className="space-y-4">
+          <WaveformTimeline
+            file={sourceFile}
+            duration={safeDuration}
+            start={draftStart}
+            end={draftEnd}
+            transcriptSegments={transcriptSegments}
+            disabled={disabled}
+            onPick={(time) => {
+              if (Math.abs(time - draftStart) <= Math.abs(time - draftEnd)) {
+                const next = Math.max(0, Math.min(time, draftEnd - 1));
+                setDraftStart(next);
+              } else {
+                const next = Math.min(safeDuration, Math.max(time, draftStart + 1));
+                setDraftEnd(next);
+              }
+            }}
+          />
           <div>
             <div className="flex justify-between text-xs text-zinc-500 mb-2"><span>Mulai</span><span>{formatSeconds(draftStart)}</span></div>
             <input
@@ -141,7 +164,7 @@ export default function ClipEditor({
             {cues.map((cue, index) => (
               <div key={`${cue.start}-${cue.end}-${index}`} className="rounded-lg border border-zinc-700 bg-zinc-800/70 p-3">
                 <div className="flex items-center justify-between gap-2 mb-2">
-                  <span className="text-[10px] text-zinc-500">{formatSeconds(cue.start)} – {formatSeconds(cue.end)}</span>
+                  <div className="flex items-center gap-2"><span className="text-[10px] text-zinc-500">{formatSeconds(cue.start)} – {formatSeconds(cue.end)}</span>{typeof cue.speaker === "number" && <span className="text-[9px] rounded-full bg-emerald-500/10 text-emerald-300 px-2 py-0.5">Speaker {cue.speaker + 1}</span>}</div>
                   <button type="button" disabled={disabled} onClick={() => onCueDelete(index)} className="text-zinc-500 hover:text-red-400 disabled:opacity-40" title="Hapus caption"><Trash2 className="w-3.5 h-3.5" /></button>
                 </div>
                 <textarea

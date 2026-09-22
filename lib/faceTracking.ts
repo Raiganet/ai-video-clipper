@@ -1,5 +1,5 @@
-// Smart face-aware framing untuk crop sosial.
-// Deteksi wajah dijalankan di browser dengan MediaPipe Tasks Vision yang dimuat on-demand.
+// Dynamic face-aware framing untuk crop sosial.
+// MediaPipe dimuat on-demand di browser; video tidak diunggah ke server.
 
 const nativeImport = new Function("url", "return import(url)") as (
   url: string
@@ -21,6 +21,17 @@ export interface CropFocus {
   detectedSamples: number;
   totalSamples: number;
   mode: "face" | "center";
+}
+
+export interface CropTrackPoint {
+  time: number;
+  x: number;
+  y: number;
+  confidence: number;
+}
+
+export interface CropTrack extends CropFocus {
+  points: CropTrackPoint[];
 }
 
 function clamp(value: number, min = 0, max = 1) {
@@ -77,23 +88,37 @@ function median(values: number[]) {
     : sorted[middle];
 }
 
+function smoothTrack(points: CropTrackPoint[]) {
+  if (points.length < 3) return points;
+  return points.map((point, index) => {
+    const slice = points.slice(Math.max(0, index - 1), Math.min(points.length, index + 2));
+    const totalWeight = slice.reduce((sum, item) => sum + Math.max(0.15, item.confidence), 0);
+    return {
+      ...point,
+      x: clamp(slice.reduce((sum, item) => sum + item.x * Math.max(0.15, item.confidence), 0) / totalWeight, 0.06, 0.94),
+      y: clamp(slice.reduce((sum, item) => sum + item.y * Math.max(0.15, item.confidence), 0) / totalWeight, 0.1, 0.9),
+    };
+  });
+}
+
 /**
- * Sampling beberapa frame dalam sebuah klip, lalu memilih wajah terbesar per frame.
- * Hasil akhirnya adalah titik fokus stabil (median) agar framing tidak jitter.
+ * Mengambil beberapa sampel wajah dan mempertahankan kontinuitas subjek antar frame.
+ * Ini adalah active-subject heuristic, bukan lip/mouth speaking detector murni.
  */
-export async function detectFaceFocus(
+export async function detectFaceTrack(
   file: File,
   clipStart: number,
   clipDuration: number,
   onProgress?: (percent: number) => void
-): Promise<CropFocus> {
-  const fallback: CropFocus = {
+): Promise<CropTrack> {
+  const fallback: CropTrack = {
     x: 0.5,
     y: 0.45,
     confidence: 0,
     detectedSamples: 0,
     totalSamples: 0,
     mode: "center",
+    points: [],
   };
 
   if (typeof window === "undefined" || clipDuration <= 0) return fallback;
@@ -108,62 +133,76 @@ export async function detectFaceFocus(
 
   try {
     await waitForEvent(video, "loadeddata");
-    const sampleCount = Math.max(3, Math.min(7, Math.ceil(clipDuration / 5)));
-    const xs: number[] = [];
-    const ys: number[] = [];
-    const scores: number[] = [];
+    const sampleCount = Math.max(4, Math.min(16, Math.ceil(clipDuration / 2.5)));
+    const points: CropTrackPoint[] = [];
+    let previous: CropTrackPoint | null = null;
 
     for (let index = 0; index < sampleCount; index += 1) {
       const ratio = sampleCount === 1 ? 0.5 : (index + 0.5) / sampleCount;
       const time = clipStart + clipDuration * ratio;
       await seek(video, time);
 
-      // MediaPipe menerima HTMLVideoElement sebagai image source.
       const result = detector.detect(video);
       const detections = Array.isArray(result?.detections) ? result.detections : [];
+      const candidates: Array<CropTrackPoint & { area: number }> = [];
 
-      let best: {
-        boundingBox?: { originX: number; originY: number; width: number; height: number };
-        categories?: Array<{ score?: number }>;
-      } | null = null;
-      let bestArea = 0;
       for (const detection of detections) {
         const box = detection?.boundingBox;
-        if (!box) continue;
-        const area = Math.max(0, Number(box.width) || 0) * Math.max(0, Number(box.height) || 0);
-        if (area > bestArea) {
-          bestArea = area;
-          best = detection;
-        }
+        if (!box || video.videoWidth <= 0 || video.videoHeight <= 0) continue;
+        const width = Math.max(0, Number(box.width) || 0);
+        const height = Math.max(0, Number(box.height) || 0);
+        const centerX = (Number(box.originX) + width / 2) / video.videoWidth;
+        const centerY = (Number(box.originY) + height / 2) / video.videoHeight;
+        const score = Number(detection.categories?.[0]?.score ?? 0.6);
+        if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) continue;
+        candidates.push({
+          time: Math.max(0, time - clipStart),
+          x: clamp(centerX),
+          y: clamp(centerY + 0.04),
+          confidence: Number.isFinite(score) ? clamp(score) : 0.6,
+          area: (width * height) / Math.max(1, video.videoWidth * video.videoHeight),
+        });
       }
 
-      if (best?.boundingBox && video.videoWidth > 0 && video.videoHeight > 0) {
-        const box = best.boundingBox;
-        const centerX = (Number(box.originX) + Number(box.width) / 2) / video.videoWidth;
-        const centerY = (Number(box.originY) + Number(box.height) / 2) / video.videoHeight;
-        const score = Number(best.categories?.[0]?.score ?? 0.6);
-        if (Number.isFinite(centerX) && Number.isFinite(centerY)) {
-          xs.push(clamp(centerX));
-          // Sedikit ruang di bawah wajah untuk bahu/caption.
-          ys.push(clamp(centerY + 0.04));
-          scores.push(Number.isFinite(score) ? clamp(score) : 0.6);
+      if (candidates.length > 0) {
+        let best = candidates[0];
+        let bestScore = -Infinity;
+        for (const candidate of candidates) {
+          const areaScore = Math.min(1, candidate.area * 10);
+          const continuity = previous
+            ? 1 - Math.min(1, Math.hypot(candidate.x - previous.x, candidate.y - previous.y) / 0.55)
+            : 0.5;
+          const score = areaScore * 0.5 + candidate.confidence * 0.25 + continuity * 0.25;
+          if (score > bestScore) {
+            best = candidate;
+            bestScore = score;
+          }
         }
+        const next: CropTrackPoint = { time: best.time, x: best.x, y: best.y, confidence: best.confidence };
+        points.push(next);
+        previous = next;
+      } else if (previous) {
+        // Pertahankan posisi terakhir agar crop tidak meloncat ke tengah hanya karena satu sampel gagal.
+        points.push({ ...previous, time: Math.max(0, time - clipStart), confidence: previous.confidence * 0.75 });
       }
 
       onProgress?.(Math.round(((index + 1) / sampleCount) * 100));
     }
 
-    if (xs.length === 0) {
-      return { ...fallback, totalSamples: sampleCount };
-    }
+    if (points.length === 0) return { ...fallback, totalSamples: sampleCount };
+    const smoothed = smoothTrack(points);
+    const xs = smoothed.map((point) => point.x);
+    const ys = smoothed.map((point) => point.y);
+    const confidences = smoothed.map((point) => point.confidence);
 
     return {
       x: clamp(median(xs), 0.08, 0.92),
       y: clamp(median(ys), 0.12, 0.88),
-      confidence: scores.reduce((sum, score) => sum + score, 0) / scores.length,
-      detectedSamples: xs.length,
+      confidence: confidences.reduce((sum, score) => sum + score, 0) / confidences.length,
+      detectedSamples: smoothed.length,
       totalSamples: sampleCount,
       mode: "face",
+      points: smoothed,
     };
   } finally {
     video.pause();
@@ -171,4 +210,15 @@ export async function detectFaceFocus(
     video.load();
     URL.revokeObjectURL(url);
   }
+}
+
+export async function detectFaceFocus(
+  file: File,
+  clipStart: number,
+  clipDuration: number,
+  onProgress?: (percent: number) => void
+): Promise<CropFocus> {
+  const track = await detectFaceTrack(file, clipStart, clipDuration, onProgress);
+  const { points: _points, ...focus } = track;
+  return focus;
 }

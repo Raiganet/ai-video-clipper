@@ -1,18 +1,27 @@
 {
   "name": "ai-video-clipper",
-  "version": "0.4.0",
+  "version": "1.3.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "license:generate": "node scripts/generate-license.mjs",
+    "payment:sign": "node scripts/sign-payment-webhook.mjs",
+    "worker:start": "node render-worker/server.mjs",
+    "worker:install": "npm --prefix render-worker install",
+    "worker:cluster:api": "npm --prefix render-worker run cluster:api",
+    "worker:cluster:worker": "npm --prefix render-worker run cluster:worker"
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
-    "@vercel/blob": "^2.6.1",
-    "framer-motion": "^12.42.2",
+    "firebase": "12.19.0",
+    "firebase-admin": "14.4.0",
     "lucide-react": "^1.25.0",
     "next": "16.2.10",
     "react": "19.2.4",
@@ -21,7 +30,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

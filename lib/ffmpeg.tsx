@@ -2,6 +2,9 @@
 // satu instance FFmpeg tidak menulis file virtual dengan nama yang bentrok.
 
 import { buildCaptionCues, renderCaptionLayers, type CaptionCue, type CaptionStyle } from "@/lib/captions";
+import { renderBrandingLayer, type BrandingSettings } from "@/lib/branding";
+import { renderBriefCtaLayer, type BriefCtaOverlay } from "@/lib/briefingOverlay";
+import type { CropTrackPoint } from "@/lib/faceTracking";
 import type { TranscriptSegment } from "@/lib/transcription";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -49,6 +52,9 @@ export interface RenderClipOptions {
   sourceWidth: number;
   sourceHeight: number;
   cropFocus?: { x: number; y: number };
+  cropTrack?: CropTrackPoint[];
+  branding?: BrandingSettings;
+  ctaOverlay?: BriefCtaOverlay;
   captionCues?: CaptionCue[];
   onProgress?: (percent: number, phase: "captions" | "render") => void;
 }
@@ -96,6 +102,45 @@ function runExclusive<T>(task: () => Promise<T>): Promise<T> {
 function even(value: number) {
   const rounded = Math.max(2, Math.round(value));
   return rounded % 2 === 0 ? rounded : rounded - 1;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function buildDynamicCropExpression(
+  points: CropTrackPoint[] | undefined,
+  axis: "x" | "y",
+  scaledWidth: number,
+  scaledHeight: number,
+  outputWidth: number,
+  outputHeight: number,
+  fallback: number
+) {
+  const maxOffset = axis === "x" ? Math.max(0, scaledWidth - outputWidth) : Math.max(0, scaledHeight - outputHeight);
+  if (maxOffset <= 0) return "0";
+  const scaledSize = axis === "x" ? scaledWidth : scaledHeight;
+  const outputSize = axis === "x" ? outputWidth : outputHeight;
+  const fallbackPx = Math.round(clampNumber(scaledSize * fallback - outputSize / 2, 0, maxOffset));
+  const usable = (points || [])
+    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point[axis]))
+    .slice(0, 16)
+    .map((point) => ({
+      time: Math.max(0, point.time),
+      px: Math.round(clampNumber(scaledSize * point[axis] - outputSize / 2, 0, maxOffset)),
+    }));
+  if (usable.length < 2) return String(usable[0]?.px ?? fallbackPx);
+
+  let expression = String(usable[usable.length - 1].px);
+  for (let index = usable.length - 2; index >= 0; index -= 1) {
+    const a = usable[index];
+    const b = usable[index + 1];
+    const span = Math.max(0.05, b.time - a.time);
+    const delta = b.px - a.px;
+    const interpolated = delta === 0 ? String(a.px) : `${a.px}+(${delta})*(t-${a.time.toFixed(3)})/${span.toFixed(3)}`;
+    expression = `if(lt(t,${b.time.toFixed(3)}),${interpolated},${expression})`;
+  }
+  return expression;
 }
 
 export function resolveOutputRatio(ratio: OutputRatio, sourceWidth: number, sourceHeight: number): Exclude<OutputRatio, "auto"> {
@@ -171,6 +216,8 @@ export async function renderVideoClip(file: File, options: RenderClipOptions): P
     const inputName = uniqueName("video-source", inputExt);
     const outputName = uniqueName("clip-rendered", "mp4");
     const captionNames: string[] = [];
+    let brandingName: string | null = null;
+    let ctaName: string | null = null;
     const size = getOutputSize(options.ratio, options.sourceWidth, options.sourceHeight);
     const cues = options.captionCues ?? buildCaptionCues(options.transcriptSegments, options.start, options.duration, options.captionStyle);
 
@@ -182,12 +229,22 @@ export async function renderVideoClip(file: File, options: RenderClipOptions): P
         size.height,
         (percent) => options.onProgress?.(percent, "captions")
       );
+      const brandingLayer = options.branding ? await renderBrandingLayer(options.branding, size.width, size.height) : null;
+      const ctaLayer = await renderBriefCtaLayer(options.ctaOverlay, size.width, size.height);
 
       await instance.writeFile(inputName, await fetchFile(file));
       for (let index = 0; index < captionLayers.length; index += 1) {
         const name = uniqueName(`caption-${index + 1}`, "png");
         captionNames.push(name);
         await instance.writeFile(name, captionLayers[index].png);
+      }
+      if (brandingLayer) {
+        brandingName = uniqueName("branding", "png");
+        await instance.writeFile(brandingName, brandingLayer);
+      }
+      if (ctaLayer) {
+        ctaName = uniqueName("brief-cta", "png");
+        await instance.writeFile(ctaName, ctaLayer);
       }
 
       const args: string[] = [
@@ -198,6 +255,8 @@ export async function renderVideoClip(file: File, options: RenderClipOptions): P
       captionNames.forEach((name) => {
         args.push("-loop", "1", "-i", name);
       });
+      if (brandingName) args.push("-loop", "1", "-i", brandingName);
+      if (ctaName) args.push("-loop", "1", "-i", ctaName);
 
       const filterParts: string[] = [];
       let baseScale: string;
@@ -211,12 +270,12 @@ export async function renderVideoClip(file: File, options: RenderClipOptions): P
         const scaledHeight = even(sourceHeight * scaleFactor);
         const focusX = Math.min(0.95, Math.max(0.05, options.cropFocus?.x ?? 0.5));
         const focusY = Math.min(0.95, Math.max(0.05, options.cropFocus?.y ?? 0.5));
-        const cropX = Math.max(0, Math.min(scaledWidth - size.width, Math.round(scaledWidth * focusX - size.width / 2)));
-        const cropY = Math.max(0, Math.min(scaledHeight - size.height, Math.round(scaledHeight * focusY - size.height / 2)));
-        baseScale = `scale=${scaledWidth}:${scaledHeight},crop=${size.width}:${size.height}:${cropX}:${cropY},setsar=1`;
+        const cropX = buildDynamicCropExpression(options.cropTrack, "x", scaledWidth, scaledHeight, size.width, size.height, focusX);
+        const cropY = buildDynamicCropExpression(options.cropTrack, "y", scaledWidth, scaledHeight, size.width, size.height, focusY);
+        baseScale = `scale=${scaledWidth}:${scaledHeight},setpts=PTS-STARTPTS,crop=${size.width}:${size.height}:x='${cropX}':y='${cropY}',setsar=1`;
       }
 
-      filterParts.push(`[0:v]${baseScale},setpts=PTS-STARTPTS[v0]`);
+      filterParts.push(size.ratio === "original" ? `[0:v]${baseScale},setpts=PTS-STARTPTS[v0]` : `[0:v]${baseScale}[v0]`);
       let lastVideo = "v0";
 
       captionLayers.forEach((layer, index) => {
@@ -230,6 +289,22 @@ export async function renderVideoClip(file: File, options: RenderClipOptions): P
         );
         lastVideo = overlayOut;
       });
+
+      if (brandingName) {
+        const imageIndex = captionLayers.length + 1;
+        const overlayOut = `vbrand`;
+        filterParts.push(`[${imageIndex}:v]format=rgba[brand];[${lastVideo}][brand]overlay=0:0[${overlayOut}]`);
+        lastVideo = overlayOut;
+      }
+
+      if (ctaName && options.ctaOverlay?.enabled) {
+        const imageIndex = captionLayers.length + (brandingName ? 2 : 1);
+        const overlayOut = `vcta`;
+        const ctaStart = Math.max(0, options.duration - Math.max(1.5, options.ctaOverlay.duration || 3.5)).toFixed(3);
+        const ctaEnd = Math.max(0.1, options.duration).toFixed(3);
+        filterParts.push(`[${imageIndex}:v]format=rgba[cta];[${lastVideo}][cta]overlay=0:0:enable='between(t,${ctaStart},${ctaEnd})'[${overlayOut}]`);
+        lastVideo = overlayOut;
+      }
 
       progressCb = (percent) => options.onProgress?.(percent, "render");
 
@@ -255,6 +330,8 @@ export async function renderVideoClip(file: File, options: RenderClipOptions): P
       await safeDelete(instance, inputName);
       await safeDelete(instance, outputName);
       for (const name of captionNames) await safeDelete(instance, name);
+      if (brandingName) await safeDelete(instance, brandingName);
+      if (ctaName) await safeDelete(instance, ctaName);
       progressCb = null;
     }
   });

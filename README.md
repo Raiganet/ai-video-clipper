@@ -1,91 +1,258 @@
-# AI Video Clipper — Stage 3
+# Kastriva AI Video Clipper — Stage 12
 
-Next.js 16 + FFmpeg.wasm + Groq Whisper untuk mencari momen video dari transkripsi bertimestamp, lalu mengedit trim/caption/framing dan merender klip siap upload langsung di browser.
+Versi **1.3.0**. Stage 12 menambahkan **Campaign Workspace** di atas Stage 11: satu campaign dapat dikelola sebagai kumpulan narasi, source video, coverage kandidat klip, fokus narasi, dan checklist siap submit.
 
-## Fitur yang sudah aktif
+## Fitur utama
 
-- Upload MP4/WebM/MOV/M4V.
-- Metadata durasi dan resolusi dibaca di browser.
-- Audio diekstrak menjadi mono 16 kHz AAC 32 kbps.
-- Audio panjang dipecah per 12 menit sebelum dikirim ke API transkripsi.
-- Groq Whisper `verbose_json` menghasilkan timestamp segmen.
-- Pemilihan momen memakai timestamp, keyword, kepadatan ucapan, hook/pertanyaan, dan mode vibe.
-- Vibe: Viral, Edukasi, Jualan, Ringkas.
-- Fallback Pembagian Cepat bila AI gagal atau sengaja dimatikan.
-- Burn-in caption nyata ke MP4: Clean, Karaoke, Pili, Pop, atau Tanpa Caption.
-- Caption diraster dengan Canvas browser menjadi PNG transparan, lalu dibakar dengan FFmpeg.
-- **Editor caption sebelum render**: koreksi teks, hapus cue, tambah caption manual, atau reset kembali ke caption otomatis.
-- **Trim manual**: ubah start/end setiap draft klip sebelum render.
-- **Smart Face framing**: MediaPipe Face Detector dimuat on-demand di browser, sampling 3–7 frame per klip, lalu memilih pusat framing stabil berdasarkan median wajah terbesar.
-- Smart Face otomatis fallback ke center-crop bila wajah/model tidak tersedia.
-- Output: Auto, 9:16 (720×1280), 1:1 (720×720), 16:9 (1280×720), dan Original.
-- Crop FFmpeg menggunakan titik fokus Smart Face/Center, bukan lagi center-crop wajib.
-- Export memakai H.264 (`libx264`) + AAC, `yuv420p`, dan `faststart`.
-- Preview memiliki render signature yang memasukkan rasio, Smart Face/Center, trim, style caption, dan isi caption. Perubahan editor otomatis membuat preview lama berstatus stale.
-- Memilih klip tidak lagi otomatis merender. Edit dulu, lalu render satu kali agar lebih hemat resource.
-- Operasi FFmpeg diserialkan dan memakai nama file unik agar tidak bentrok.
-- Temporary file dan Object URL dibersihkan untuk mengurangi memory leak.
-- API transkripsi memiliki validasi ukuran/format dan rate limit dasar per instance.
+- AI moment detection: Viral / Edukasi / Jualan / Ringkas.
+- Groq Whisper segment + word timestamps.
+- Deepgram speaker diarization opsional.
+- Caption burn-in: Clean / Karaoke / Pili / Pop.
+- Karaoke word-level dengan timestamp kata asli bila tersedia.
+- Rasio Auto / 9:16 / 1:1 / 16:9 / Original.
+- Smart Face + Dynamic Active Subject Tracking.
+- Trim + waveform timeline + caption editor.
+- Branding/watermark preset.
+- Batch render, retry, progress, dan **cancel render**.
+- Project/history IndexedDB + cloud draft sync Firestore.
+- Firebase Auth, verified email, trial/quota/lisensi.
+- PWA + offline shell.
+- Midtrans Snap + verified webhook + reconciliation.
+- Export Google Drive dengan scope `drive.file`.
+- **ZIP batch sekarang dapat berisi MP4 + SRT + VTT.**
+- **Export SRT/VTT terpisah** untuk editor/platform sosial.
+- **AI Publish Pack** per klip: judul, deskripsi, hook, CTA, hashtag.
+- Dashboard Admin menampilkan health/queue render infrastructure.
 
-## Smart Face
 
-Smart Face memakai MediaPipe Tasks Vision `1.0.1` melalui dynamic import CDN dan model BlazeFace short-range. Tidak ada package tambahan yang harus dibundle ke Next.js.
 
-Alur:
+## Stage 12 — Campaign Workspace
 
-1. Pilih draft klip.
-2. Saat render, browser mengambil beberapa sampel waktu di dalam klip.
-3. Wajah terbesar di setiap sampel dicatat.
-4. Median posisi wajah menjadi titik fokus stabil untuk crop 9:16/1:1/16:9.
-5. Bila tidak ada wajah atau library gagal dimuat, center-crop digunakan otomatis.
+Stage 12 menambahkan panel **Campaign Workspace** untuk kebutuhan campaign nyata seperti Fortis Circle. Workspace ini membantu:
 
-Ini sengaja menggunakan **stable face-aware framing per klip**, bukan crop yang berpindah setiap frame, agar output tidak jitter dan FFmpeg.wasm tetap realistis di perangkat mobile.
+- menyusun banyak narasi campaign dalam satu tempat;
+- menyimpan source video yang sedang dipakai;
+- melihat coverage kandidat klip per narasi;
+- memfokuskan pencarian hanya ke satu narasi tertentu;
+- memeriksa checklist siap submit (logo, CTA, target speaker, hashtag, dan cakupan narasi).
 
-## Editor Stage 3
+Jika briefing memiliki 6 narasi, Stage 12 akan berusaha menghasilkan cakupan narasi yang lebih merata, bukan hanya mengambil 5–6 skor tertinggi dari narasi yang sama. Workspace juga menyediakan **focus mode** agar pengguna bisa memilih satu narasi dan menjalankan pencarian ulang untuk membuat kandidat yang lebih spesifik pada angle tersebut.
 
-- Klik kartu draft untuk memilihnya.
-- Atur slider/angka `Start` dan `End`, lalu pilih **Terapkan Trim**.
-- Koreksi teks caption di panel Editor Caption.
-- Tambahkan caption manual bila transcript tidak tersedia.
-- Klik **Render klip / Render perubahan** setelah semua edit selesai.
-- Download hanya aktif bila preview sesuai dengan setting/editor terbaru.
+## Stage 11 — Briefing-Aware Clipper
 
-## Belum aktif / Tahap berikutnya
+Tempel briefing campaign pada panel **Briefing-Aware Clipper**, lalu klik **Analisis Briefing**. Parser AI (dengan fallback lokal) mengekstrak:
 
-- Dynamic active-speaker tracking yang menggeser crop dari frame ke frame.
-- Word-level karaoke asli. Stage 3 masih membagi timestamp segmen menjadi cue pendek berdasarkan estimasi distribusi kata.
-- Timeline visual/waveform dan drag handles seperti editor video penuh.
-- Import/download langsung dari YouTube. UI YouTube saat ini memvalidasi link dan menampilkan thumbnail saja.
-- Authentication, quota/lisensi per akun, project history, autosave draft, dan penyimpanan cloud.
-- PWA/offline shell untuk UI aplikasi.
+- durasi minimum/maksimum klip;
+- target subjek/speaker;
+- narasi/angle yang harus dicari;
+- CTA akhir video;
+- link yang wajib dicantumkan di bio;
+- kebutuhan logo/watermark;
+- hashtag wajib;
+- URL materi sumber sebagai referensi;
+- larangan topik/klaim serta pemeriksaan manual.
 
-## Environment
+Contoh briefing seperti Fortis Circle (`30–90 detik`, fokus pembicara tertentu, logo wajib, CTA, `#davidnoah #fortiscircle`, dan larangan topik tertentu) akan memengaruhi pencarian momen, bukan hanya menjadi catatan UI. Kandidat yang mengandung topik terlarang atau janji keuntungan eksplisit dari transcript dibuang dari hasil briefing. Klaim/rekomendasi finansial yang masih membutuhkan konteks diberi warning untuk review manusia.
 
-Salin `.env.example` menjadi `.env.local`:
+### Alur target speaker
+
+Sistem **tidak menebak identitas orang dari wajah**. Jika briefing menyebut nama pembicara, aktifkan diarization, dengarkan preview, lalu tag label `Speaker 1/2/...` yang benar satu kali. Setelah itu klik pencarian briefing lagi; transcript yang sudah ada digunakan ulang sehingga sistem dapat memprioritaskan section yang didominasi speaker tersebut tanpa transkripsi ulang.
+
+### Compliance sebelum posting
+
+Panel **Brief Compliance** memeriksa hal yang dapat diverifikasi dari transcript dan setting render: durasi, logo, CTA, dominasi target speaker, hashtag, dan filter topik/klaim. Aturan seperti “bukan screenshot campaign”, “bukan repost video yang sudah pernah diposting”, “tidak memakai ads/bot”, serta kepemilikan/izin footage ditandai **Manual Review**, karena tidak aman untuk dianggap lolos hanya dari transcript.
+
+### CTA dan logo
+
+Jika brief mewajibkan logo, render diblokir sampai logo benar-benar diunggah pada panel Branding. CTA brief dibakar ke bagian akhir MP4. Render worker Stage 11 juga mendukung file logo PNG/JPEG/WebP asli, bukan hanya nama brand teks. Publish Pack mewarisi CTA/hashtag wajib dan menampilkan reminder link-in-bio.
+
+### Materi YouTube/Drive
+
+URL dari briefing disimpan sebagai **referensi materi**. Webapp tidak bertindak sebagai downloader YouTube. Untuk clipping, upload file video sumber yang memang diizinkan untuk digunakan sesuai campaign/licensing.
+
+## Stage 10 Render Infrastructure
+
+### Mode A — Local Worker
+
+Tetap tersedia tanpa Redis. Cocok untuk development atau satu VM:
 
 ```bash
-GROQ_API_KEY=your_key
-GROQ_WHISPER_MODEL=whisper-large-v3
+npm run worker:start
 ```
 
-## Menjalankan
+Queue berada di memory worker dan source/output berada di temp disk dengan TTL.
+
+### Mode B — Distributed Cluster
+
+Production dapat memakai:
+
+```text
+Browser
+  │
+  ├─ presigned PUT ──────────► R2 / S3
+  │
+  └─ create render job ──────► Cluster API
+                                │
+                                ▼
+                              Redis
+                                │
+                   ┌────────────┼────────────┐
+                   ▼            ▼            ▼
+               FFmpeg #1    FFmpeg #2    FFmpeg #3
+                   │            │            │
+                   └────────────┼────────────┘
+                                ▼
+                              R2 / S3
+```
+
+BullMQ menyimpan queue bersama di Redis sehingga worker dapat berada pada container/VM berbeda. BullMQ mendukung worker concurrency/retry dan Stage 10/11 memakai job attempts + exponential backoff. Untuk file besar, R2/S3 menghindari kebutuhan shared local disk antar worker.
+
+Install dependency cluster:
 
 ```bash
+npm run worker:install
+```
+
+Jalankan API producer:
+
+```bash
+npm run worker:cluster:api
+```
+
+Jalankan sebanyak worker yang diperlukan:
+
+```bash
+npm run worker:cluster:worker
+```
+
+Lihat `render-worker/README.md` untuk deployment detail.
+
+## Environment aplikasi
+
+Salin `.env.example` menjadi `.env.local`.
+
+Environment utama:
+
+```env
+GROQ_API_KEY=...
+GROQ_WHISPER_MODEL=whisper-large-v3
+GROQ_TEXT_MODEL=llama-3.3-70b-versatile
+
+DEEPGRAM_API_KEY=...
+DEEPGRAM_MODEL=nova-3
+
+NEXT_PUBLIC_FIREBASE_API_KEY=...
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=...
+NEXT_PUBLIC_FIREBASE_APP_ID=...
+FIREBASE_PROJECT_ID=...
+FIREBASE_CLIENT_EMAIL=...
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+
+ADMIN_EMAILS=admin@domain.com
+LICENSE_SIGNING_SECRET=minimum-32-random-characters
+PAYMENT_WEBHOOK_SECRET=another-minimum-32-random-characters
+
+MIDTRANS_SERVER_KEY=SB-Mid-server-...
+MIDTRANS_IS_PRODUCTION=false
+MIDTRANS_PRO_PRICE_IDR=99000
+MIDTRANS_PRO_DAYS=30
+MIDTRANS_LIFETIME_PRICE_IDR=499000
+
+NEXT_PUBLIC_GOOGLE_DRIVE_CLIENT_ID=...apps.googleusercontent.com
+
+RENDER_WORKER_URL=https://render.domain.com
+RENDER_WORKER_SECRET=minimum-24-random-characters
+```
+
+Semua secret server **jangan** memakai `NEXT_PUBLIC_`.
+
+## Environment distributed render cluster
+
+Di deployment `render-worker`:
+
+```env
+REDIS_URL=redis://default:password@redis-host:6379
+RENDER_QUEUE_NAME=ai-clipper-render
+RENDER_WORKER_CONCURRENCY=1
+RENDER_MAX_RETRIES=2
+RENDER_FILE_TTL_MINUTES=180
+MAX_UPLOAD_MB=2048
+
+OBJECT_STORAGE_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+OBJECT_STORAGE_REGION=auto
+OBJECT_STORAGE_BUCKET=ai-clipper-render
+OBJECT_STORAGE_ACCESS_KEY_ID=...
+OBJECT_STORAGE_SECRET_ACCESS_KEY=...
+OBJECT_STORAGE_PREFIX=ai-clipper
+OBJECT_STORAGE_FORCE_PATH_STYLE=false
+```
+
+Untuk Cloudflare R2, tambahkan CORS bucket agar origin webapp boleh melakukan `PUT` ke presigned URL. Presigned URL adalah bearer capability dengan masa berlaku pendek; jangan log atau menyimpannya ke analytics.
+
+Tambahkan bucket lifecycle rule sebagai safety net untuk menghapus source/output lama.
+
+## AI Publish Pack
+
+Setelah transcript tersedia, pilih klip lalu buka **AI Publish Pack**. Endpoint `/api/clip-metadata` mengirim transcript klip (bukan file video) ke Groq Chat Completions dan meminta JSON:
+
+```json
+{
+  "title": "...",
+  "description": "...",
+  "hashtags": ["#..."],
+  "hook": "...",
+  "cta": "..."
+}
+```
+
+Hasil dapat diedit dan disimpan di draft project. Default model `llama-3.3-70b-versatile` dapat diganti melalui `GROQ_TEXT_MODEL`.
+
+## Subtitle export
+
+Setiap klip memakai timing relatif terhadap awal klip, sehingga export menghasilkan file `.srt` dan `.vtt` yang langsung cocok dengan MP4 hasil render. Jika speaker diarization aktif, nama `Speaker N:` ikut ditulis di subtitle.
+
+ZIP batch menyertakan subtitle ketika cue tersedia. Tombol **SRT/VTT** membuat ZIP subtitle tanpa MP4.
+
+## Cancel render
+
+Untuk server render, tombol **Batalkan Render** mengirim `DELETE` ke render job. Local worker membunuh child FFmpeg. Pada cluster, cancellation diteruskan ke BullMQ worker dan AbortSignal menghentikan FFmpeg aktif. Browser-render FFmpeg WASM tidak memiliki hard-cancel yang aman pada instance bersama, jadi cancel paling efektif pada Server/Auto mode yang memilih worker.
+
+## Monitoring Admin
+
+Dashboard `/admin` sekarang membaca `RENDER_WORKER_URL/health` dan menampilkan:
+
+- Online/offline.
+- Mode `bullmq` atau local.
+- Active render.
+- Queued render.
+- Storage backend.
+
+Endpoint health tidak berisi secret atau user data.
+
+## Menjalankan webapp
+
+```powershell
 npm install
 npm run dev
 ```
 
-## Verifikasi sebelum deploy
+Production check:
 
-```bash
+```powershell
 npm run lint
 npm run build
 ```
 
-## Catatan performa
+## Batasan yang masih ada
 
-FFmpeg.wasm memproses video di RAM browser. Smart Face menambah proses sampling wajah sebelum render. Output sosial dibatasi ke 720p/1280p agar lebih realistis untuk desktop dan ponsel. Video sangat besar atau perangkat dengan RAM kecil tetap membutuhkan resource tinggi.
+- Active Subject masih visual face-continuity heuristic, belum speaker-to-face lip activity matching.
+- Browser FFmpeg WASM tetap terbatas memory; gunakan cluster worker untuk video besar.
+- Presigned direct upload membutuhkan CORS bucket yang benar.
+- Distributed source/output retention sebaiknya dipaksa lagi lewat lifecycle rule bucket.
+- AI Publish Pack dan briefing ranking terutama memakai transcript/cue; aturan visual tetap membutuhkan review atau analisis visual tambahan.
+- URL YouTube/Drive pada brief adalah referensi materi; pemrosesan memakai file sumber yang di-upload dan memang boleh digunakan.
 
-## Catatan produksi
+## Arah berikutnya
 
-Rate limit bawaan menggunakan memory proses Node sehingga hanya perlindungan dasar. Untuk deployment publik, tambahkan authentication, quota per user, dan rate limiter terdistribusi (Redis/KV atau layanan setara).
+Stage berikutnya dapat fokus pada persistent campaign templates/brief library, evidence checklist per campaign, visual compliance detector, speaker-to-face lip activity matching, billing usage per render minute, dan webhook worker health alerts.

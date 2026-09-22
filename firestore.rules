@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Stage 4 memakai Firebase Admin SDK di server untuk profile, quota, dan lisensi.
+    // Browser tidak membutuhkan akses Firestore langsung.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

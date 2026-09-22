@@ -6,6 +6,10 @@ export interface CaptionCue {
   start: number;
   end: number;
   text: string;
+  speaker?: number;
+  /** Stage 10: indeks kata aktif untuk highlight karaoke presisi. */
+  activeWordIndex?: number;
+  timingSource?: "word" | "segment" | "manual";
 }
 
 interface RenderedCaption {
@@ -32,6 +36,28 @@ function splitSegment(segment: TranscriptSegment, clipStart: number, clipEnd: nu
   const words = cleanText(segment.text).split(" ").filter(Boolean);
   if (words.length === 0) return [] as CaptionCue[];
 
+  // Stage 10: gunakan timestamp kata asli bila provider mengembalikannya.
+  // Setiap cue menampilkan jendela kata yang sama, tetapi activeWordIndex berubah
+  // tepat mengikuti start/end kata sehingga efek karaoke tidak lagi diperkirakan rata.
+  if (style === "karaoke" && Array.isArray(segment.words) && segment.words.length > 0) {
+    const exactWords = segment.words
+      .filter((word) => word.end > clipStart && word.start < clipEnd && cleanText(word.text))
+      .map((word) => ({ ...word, start: Math.max(word.start, clipStart), end: Math.min(word.end, clipEnd), text: cleanText(word.text) }))
+      .filter((word) => word.end > word.start);
+    return exactWords.map((word, index) => {
+      const windowStart = Math.max(0, Math.min(index - 2, Math.max(0, exactWords.length - 5)));
+      const windowWords = exactWords.slice(windowStart, windowStart + 5);
+      return {
+        start: Math.max(0, word.start - clipStart),
+        end: Math.max(0.08, word.end - clipStart),
+        text: windowWords.map((item) => item.text).join(" "),
+        speaker: typeof word.speaker === "number" ? word.speaker : (typeof segment.speaker === "number" ? segment.speaker : undefined),
+        activeWordIndex: index - windowStart,
+        timingSource: "word" as const,
+      };
+    });
+  }
+
   const groupSize = WORDS_PER_CUE[style];
   const groups: string[][] = [];
   for (let index = 0; index < words.length; index += groupSize) {
@@ -53,6 +79,8 @@ function splitSegment(segment: TranscriptSegment, clipStart: number, clipEnd: nu
       start: Math.max(0, start),
       end: Math.max(start + 0.12, end),
       text: group.join(" "),
+      speaker: typeof segment.speaker === "number" ? segment.speaker : undefined,
+      timingSource: "segment",
     } satisfies CaptionCue;
   });
 }
@@ -72,7 +100,7 @@ export function buildCaptionCues(
     .flatMap((segment) => splitSegment(segment, clipStart, clipEnd, typedStyle))
     .filter((cue) => cue.end > cue.start && cue.start < clipDuration)
     .map((cue) => ({ ...cue, end: Math.min(clipDuration, cue.end) }))
-    .slice(0, 80);
+    .slice(0, style === "karaoke" ? 240 : 80);
 }
 
 function roundRect(
@@ -140,6 +168,22 @@ async function renderCueToPng(cue: CaptionCue, style: Exclude<CaptionStyle, "non
   const y = Math.round(height * (style === "pop" ? 0.72 : 0.79));
 
   ctx.save();
+  if (typeof cue.speaker === "number") {
+    const badgeText = `SPEAKER ${cue.speaker + 1}`;
+    const badgeSize = Math.max(16, Math.round(fontSize * 0.34));
+    ctx.font = `800 ${badgeSize}px Arial, Helvetica, sans-serif`;
+    const badgeWidth = ctx.measureText(badgeText).width + badgeSize * 1.1;
+    const badgeHeight = badgeSize * 1.55;
+    const badgeY = y - boxHeight / 2 - badgeHeight - Math.max(8, Math.round(fontSize * 0.14));
+    ctx.fillStyle = "rgba(16,185,129,0.92)";
+    roundRect(ctx, x - badgeWidth / 2, badgeY, badgeWidth, badgeHeight, Math.round(badgeHeight * 0.3));
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(badgeText, x, badgeY + badgeHeight / 2);
+    ctx.font = `${style === "clean" ? 800 : 900} ${fontSize}px Arial, Helvetica, sans-serif`;
+  }
   if (style === "clean") {
     ctx.fillStyle = "rgba(0,0,0,0.62)";
     roundRect(ctx, x - boxWidth / 2, y - boxHeight / 2, boxWidth, boxHeight, Math.round(fontSize * 0.25));
@@ -147,11 +191,24 @@ async function renderCueToPng(cue: CaptionCue, style: Exclude<CaptionStyle, "non
     ctx.fillStyle = "#ffffff";
     ctx.fillText(text, x, y);
   } else if (style === "karaoke") {
-    ctx.strokeStyle = "rgba(0,0,0,0.95)";
-    ctx.lineWidth = Math.max(5, Math.round(fontSize * 0.14));
-    ctx.strokeText(text, x, y);
-    ctx.fillStyle = "#fde047";
-    ctx.fillText(text, x, y);
+    const words = text.split(/\s+/).filter(Boolean);
+    const active = typeof cue.activeWordIndex === "number" ? Math.max(0, Math.min(words.length - 1, cue.activeWordIndex)) : -1;
+    const gap = Math.max(8, Math.round(fontSize * 0.16));
+    const widths = words.map((word) => ctx.measureText(word).width);
+    const totalWidth = widths.reduce((sum, width) => sum + width, 0) + gap * Math.max(0, words.length - 1);
+    let cursor = x - totalWidth / 2;
+    ctx.textAlign = "left";
+    words.forEach((word, index) => {
+      const centerX = cursor + widths[index] / 2;
+      ctx.textAlign = "center";
+      ctx.strokeStyle = "rgba(0,0,0,0.95)";
+      ctx.lineWidth = Math.max(5, Math.round(fontSize * 0.14));
+      ctx.strokeText(word, centerX, y);
+      ctx.fillStyle = index === active || active < 0 ? "#fde047" : "#ffffff";
+      ctx.fillText(word, centerX, y);
+      cursor += widths[index] + gap;
+    });
+    ctx.textAlign = "center";
   } else if (style === "pili") {
     ctx.shadowColor = "rgba(0,0,0,0.45)";
     ctx.shadowBlur = Math.round(fontSize * 0.18);
